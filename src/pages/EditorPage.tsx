@@ -59,6 +59,7 @@ export default function EditorPage() {
   const [dupes,           setDupes]           = useState(0);
   const [saving,          setSaving]          = useState(false);
   const [resyncing,       setResyncing]       = useState(false);
+  const [loadingPlaylist, setLoadingPlaylist] = useState(!!sourceId || !!editedId);
 
   // ── Bulk selection ────────────────────────────────────────────
   const [selectedIds,     setSelectedIds]     = useState<Set<string>>(new Set());
@@ -99,11 +100,12 @@ export default function EditorPage() {
   // ── Load saved edited playlist ────────────────────────────────
   useEffect(() => {
     if (!editedId) return;
-    setIsSourceMode(false); // editing a saved playlist = edit mode
+    setIsSourceMode(false);
+    setLoadingPlaylist(true);
     (async () => {
       const { data, error } = await supabase
         .from("edited_playlists").select("*").eq("id", editedId).single();
-      if (error || !data) { toast.error("Could not load saved playlist"); return; }
+      if (error || !data) { toast.error("Could not load saved playlist"); setLoadingPlaylist(false); return; }
       const row = data as EditedPlaylistRow;
       setEditedRow(row);
 
@@ -129,6 +131,7 @@ export default function EditorPage() {
         if (sr) setSourceRow(sr as SourcePlaylistRow);
       }
       toast.success(`Loaded "${row.name}" — ${parsed.length.toLocaleString()} channels`);
+      setLoadingPlaylist(false);
     })();
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [editedId]);
@@ -136,11 +139,12 @@ export default function EditorPage() {
   // ── Load from source playlist ─────────────────────────────────
   useEffect(() => {
     if (!sourceId) return;
-    setIsSourceMode(true); // opening a raw source = source mode
+    setIsSourceMode(true);
+    setLoadingPlaylist(true);
     (async () => {
       const { data, error } = await supabase
         .from("source_playlists").select("*").eq("id", sourceId).single();
-      if (error || !data) { toast.error("Could not load playlist"); return; }
+      if (error || !data) { toast.error("Could not load playlist"); setLoadingPlaylist(false); return; }
       const row = data as SourcePlaylistRow;
       setSourceRow(row);
 
@@ -153,12 +157,14 @@ export default function EditorPage() {
         if (!res.ok) { toast.error("Could not re-fetch playlist URL"); return; }
         const text = await res.text();
         handleLoad(text, row.name, row);
+        setLoadingPlaylist(false);
       } else if (row.storage_path) {
         const { data: file, error: fe } = await supabase.storage
           .from("source-playlists").download(row.storage_path);
         if (fe || !file) { toast.error("Could not download saved playlist file"); return; }
         const text = await file.text();
         handleLoad(text, row.name, row);
+        setLoadingPlaylist(false);
       }
     })();
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -556,7 +562,7 @@ export default function EditorPage() {
 
           <div className="flex-1 min-w-0 flex flex-col">
             {channels.length > 0 && (
-              <div className="sticky top-14 z-20 h-12 flex items-center border-b border-border/50 backdrop-blur-md px-3 bg-muted opacity-0">
+              <div className="sticky top-14 z-20 h-12 flex items-center border-b border-border/50 backdrop-blur-md px-3 bg-muted opacity-0 pointer-events-none">
                 <SidebarTrigger className="text-primary hover:bg-primary/10" />
                 <span className="ml-3 text-xs tracking-[0.25em] uppercase text-muted-foreground font-display">
                   Summary
@@ -565,11 +571,14 @@ export default function EditorPage() {
             )}
 
             <div className="container max-w-6xl">
-              <div className="editor-page-title">
-                <h1 className="text-3xl">Premium M3U Playlist Editor &amp; Cleaner</h1>
-              </div>
-
-              {channels.length === 0 ? (
+              {loadingPlaylist ? (
+                <main className="animate-fade-in flex items-center justify-center py-32">
+                  <div className="flex flex-col items-center gap-4">
+                    <div className="h-10 w-10 rounded-full border-2 border-primary border-t-transparent animate-spin" />
+                    <p className="text-xs text-muted-foreground tracking-widest uppercase">Loading playlist…</p>
+                  </div>
+                </main>
+              ) : channels.length === 0 ? (
                 <main className="animate-fade-in">
                   <div className="text-center mb-10">
                     <h2 className="font-display font-bold text-3xl mb-3 md:text-4xl text-center">
@@ -846,6 +855,7 @@ export default function EditorPage() {
                 </main>
               )}
             </div>
+
           </div>
         </div>
       </SidebarProvider>
