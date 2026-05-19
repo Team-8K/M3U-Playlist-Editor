@@ -1,0 +1,32 @@
+[build]
+  command   = "npm run build"
+  publish   = "dist"
+  functions = "netlify/functions"
+
+[build.environment]
+  NODE_VERSION = "20"
+
+# ── Functions ────────────────────────────────────────────────────────────
+[functions]
+  node_bundler = "esbuild"
+
+# ── Redirects ────────────────────────────────────────────────────────────
+
+# 1. Playlist serve — must come BEFORE the generic /api/* rule
+#    so /api/playlist/*.m3u hits the right function
+[[redirects]]
+  from   = "/api/playlist/:slug"
+  to     = "/.netlify/functions/playlist/:slug"
+  status = 200
+
+# 2. All other API calls → matching function by name
+[[redirects]]
+  from   = "/api/*"
+  to     = "/.netlify/functions/:splat"
+  status = 200
+
+# 3. SPA fallback — must be LAST
+[[redirects]]
+  from   = "/*"
+  to     = "/index.html"
+  status = 200

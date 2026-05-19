@@ -1,0 +1,142 @@
+@import url('https://fonts.googleapis.com/css2?family=Montserrat:wght@600;700;800;900&family=Inter:wght@400;500;600;700&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Team 8K — Premium Dark/Gold Design System
+   All colors MUST be HSL.
+*/
+
+@layer base {
+  :root {
+    /* Deep premium black backdrop */
+    --background: 0 0% 4%;
+    --foreground: 45 30% 92%;
+
+    /* Card surface — slightly raised black */
+    --card: 0 0% 7%;
+    --card-foreground: 45 30% 94%;
+
+    --popover: 0 0% 6%;
+    --popover-foreground: 45 30% 94%;
+
+    /* Signature gold */
+    --primary: 45 85% 60%;
+    --primary-foreground: 0 0% 6%;
+    --primary-glow: 45 100% 70%;
+    --primary-deep: 38 80% 45%;
+
+    --secondary: 0 0% 12%;
+    --secondary-foreground: 45 30% 92%;
+
+    --muted: 0 0% 10%;
+    --muted-foreground: 45 8% 60%;
+
+    --accent: 45 85% 60%;
+    --accent-foreground: 0 0% 6%;
+
+    --destructive: 0 75% 55%;
+    --destructive-foreground: 0 0% 100%;
+
+    --success: 142 70% 45%;
+
+    --border: 45 20% 15%;
+    --input: 0 0% 10%;
+    --ring: 45 85% 60%;
+
+    --radius: 1rem;
+
+    /* Gradients */
+    --gradient-gold: linear-gradient(135deg, hsl(45 100% 70%), hsl(38 80% 45%));
+    --gradient-gold-soft: linear-gradient(135deg, hsl(45 85% 60% / 0.15), hsl(38 80% 45% / 0.05));
+    --gradient-card: linear-gradient(160deg, hsl(0 0% 8%), hsl(0 0% 5%));
+    --gradient-radial: radial-gradient(circle at 50% 0%, hsl(45 85% 60% / 0.12), transparent 60%);
+
+    /* Shadows */
+    --shadow-gold: 0 10px 40px -10px hsl(45 85% 60% / 0.35);
+    --shadow-elegant: 0 20px 60px -20px hsl(0 0% 0% / 0.6);
+    --shadow-glow: 0 0 30px hsl(45 100% 70% / 0.25);
+
+    --transition-smooth: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+
+    --sidebar-background: 0 0% 5%;
+    --sidebar-foreground: 45 30% 92%;
+    --sidebar-primary: 45 85% 60%;
+    --sidebar-primary-foreground: 0 0% 6%;
+    --sidebar-accent: 0 0% 10%;
+    --sidebar-accent-foreground: 45 30% 92%;
+    --sidebar-border: 45 20% 15%;
+    --sidebar-ring: 45 85% 60%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  body {
+    @apply bg-background text-foreground;
+    font-family: 'Inter', system-ui, sans-serif;
+  }
+
+  h1, h2, h3, h4 {
+    font-family: 'Montserrat', sans-serif;
+    letter-spacing: -0.01em;
+  }
+}
+
+@layer utilities {
+  .text-gradient-gold {
+    background: var(--gradient-gold);
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
+
+  .bg-gradient-gold {
+    background: var(--gradient-gold);
+  }
+
+  .bg-gradient-card {
+    background: var(--gradient-card);
+  }
+
+  .shadow-gold {
+    box-shadow: var(--shadow-gold);
+  }
+
+  .shadow-elegant {
+    box-shadow: var(--shadow-elegant);
+  }
+
+  .shadow-glow {
+    box-shadow: var(--shadow-glow);
+  }
+
+  .transition-smooth {
+    transition: var(--transition-smooth);
+  }
+
+  .ring-gold {
+    border: 1px solid hsl(var(--primary) / 0.3);
+  }
+}
+
+/* Editor page title */
+.editor-page-title {
+  text-align: center;
+  padding: 32px 24px 24px;
+}
+.editor-page-title h1 {
+  font-family: 'Montserrat', sans-serif;
+  font-size: clamp(18px, 2.5vw, 26px);
+  font-weight: 500;
+  letter-spacing: 1px;
+  color: #ffffff;
+  -webkit-text-fill-color: #ffffff;
+  background: none;
+  margin: 0;
+  line-height: 1.2;
+}

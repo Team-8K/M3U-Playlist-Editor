@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Team 8K — Playlist Editor | Premium M3U Cleaner</title>
+<meta name="description" content="Team 8K Playlist Editor — premium browser-based M3U / M3U8 editor. Clean, rename, dedupe and export playlists. 100% client-side, nothing stored." />
+<meta name="author" content="Team 8K" />
+<link rel="canonical" href="/" />
+<meta property="og:title" content="Team 8K — Playlist Editor" />
+<meta property="og:description" content="Premium browser-based M3U editor. Clean, rename, dedupe and export your playlist instantly." />
+<meta property="og:type" content="website" />
+<link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+
+
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+:root {
+  --bg: #0a0a0a; --card: #111111; --card2: #161310; --border: #2a2418;
+  --accent: #d4af37; --accent-light: #f5d76e; --accent-dark: #c9a227;
+  --text: #f0ece4; --muted: #8a8274;
+}
+body { font-family: 'Montserrat', sans-serif; background: var(--bg); color: var(--text); font-weight: 300; -webkit-font-smoothing: antialiased; min-height: 100vh; }
+@keyframes pulseGold { 0%, 100% { opacity: 0.4; transform: scale(1); } 50% { opacity: 0.8; transform: scale(1.1); } }
+@keyframes orb1 { 0%, 100% { transform: translateX(-50%) scale(1); } 50% { transform: translateX(-50%) translate(40px, -30px) scale(1.1); } }
+@keyframes orb2 { 0%, 100% { transform: scale(1); } 50% { transform: translate(-50px, 20px) scale(0.95); } }
+.ambient-bg { position: fixed; inset: 0; overflow: hidden; pointer-events: none; z-index: 0; background: var(--bg); }
+.ambient-orb-1 { position: absolute; top: -20%; left: 50%; transform: translateX(-50%); width: 900px; height: 500px; background: radial-gradient(ellipse, rgba(212,175,55,0.07) 0%, transparent 70%); animation: orb1 12s ease-in-out infinite; }
+.ambient-orb-2 { position: absolute; bottom: 10%; right: -10%; width: 600px; height: 400px; background: radial-gradient(ellipse, rgba(212,175,55,0.04) 0%, transparent 70%); animation: orb2 16s ease-in-out infinite; }
+.site-header { position: fixed; top: 0; left: 0; right: 0; z-index: 100; padding: 0 24px; height: 64px; display: flex; align-items: center; justify-content: space-between; background: transparent; border-bottom: 1px solid transparent; transition: background 0.3s, border-color 0.3s, backdrop-filter 0.3s; }
+.site-header.scrolled { background: rgba(10,10,10,0.92); border-bottom: 1px solid rgba(42,36,24,0.8); backdrop-filter: blur(12px); }
+.header-logo-btn { background: none; border: none; cursor: pointer; padding: 0; display: flex; align-items: center; gap: 10px; text-decoration: none; }
+.header-logo-icon { width: 32px; height: 32px; border-radius: 8px; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+.header-logo-text { font-weight: 800; font-size: 18px; letter-spacing: 1.5px; background: linear-gradient(135deg, var(--accent-dark), var(--accent-light)); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text; }
+.page-content { position: relative; z-index: 1; padding-top: 64px; }
+.hero-section { padding: 70px 24px 40px; text-align: center; animation: fadeUp 0.7s ease both; }
+.hero-title { font-family: 'Montserrat', sans-serif; font-size: clamp(38px, 6vw, 56px); font-weight: 800; letter-spacing: 3px; color: var(--accent); background: linear-gradient(135deg, var(--accent-dark), var(--accent-light), var(--accent)); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text; margin-bottom: 16px; line-height: 1.1; display: block; }
+.hero-badge { display: inline-flex; align-items: center; gap: 8px; background: rgba(212,175,55,0.08); border: 1px solid rgba(212,175,55,0.2); border-radius: 100px; padding: 6px 16px; margin-bottom: 28px; }
+.hero-badge-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--accent); animation: pulseGold 2s ease-in-out infinite; }
+.hero-badge-text { font-family: 'Montserrat', sans-serif; font-size: 11px; font-weight: 600; letter-spacing: 1.5px; color: var(--accent); text-transform: uppercase; }
+@keyframes fadeUp { from { opacity: 0; transform: translateY(28px); } to { opacity: 1; transform: translateY(0); } }
+.site-footer { text-align: center; padding: 32px 20px 24px; color: var(--muted); font-size: 12px; font-weight: 300; letter-spacing: 0.5px; border-top: 1px solid rgba(42,36,24,0.5); position: relative; z-index: 1; }
+.footer-brand { display: flex; align-items: center; justify-content: center; gap: 8px; margin-bottom: 8px; }
+.footer-icon { width: 20px; height: 20px; border-radius: 5px; display: flex; align-items: center; justify-content: center; }
+.footer-name { font-weight: 600; letter-spacing: 1px; color: var(--text); font-size: 13px; }
+</style>
+</head>
+<body>
+
+<!-- Ambient background -->
+<div class="ambient-bg" aria-hidden="true">
+  <div class="ambient-orb-1"></div>
+  <div class="ambient-orb-2"></div>
+</div>
+
+<!-- Header -->
+<header class="site-header" id="site-header">
+  <a href="/" class="header-logo-btn">
+    <div class="header-logo-icon">
+      <img src="https://dedicated-team8k.store/logo.png" alt="Team 8K" style="width:32px;height:32px;border-radius:8px;object-fit:cover;">
+    </div>
+    <span class="header-logo-text">TEAM 8K</span>
+  </a>
+</header>
+
+<!-- React app -->
+<div class="page-content">
+  <section class="hero-section">
+    <h1 class="hero-title" style="font-family:'Montserrat',sans-serif;font-size:clamp(38px,6vw,56px);font-weight:800;letter-spacing:3px;color:#d4af37;background:linear-gradient(135deg,#c9a227,#f5d76e,#d4af37);-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text;margin-bottom:16px;line-height:1.1;display:block;">Team 8K</h1>
+    <div class="hero-badge" style="display:inline-flex;align-items:center;gap:8px;background:rgba(212,175,55,0.08);border:1px solid rgba(212,175,55,0.2);border-radius:100px;padding:6px 16px;">
+      <div class="hero-badge-dot" style="width:6px;height:6px;border-radius:50%;background:#d4af37;flex-shrink:0;"></div>
+      <span class="hero-badge-text" style="font-family:'Montserrat',sans-serif;font-size:11px;font-weight:600;letter-spacing:1.5px;color:#d4af37;text-transform:uppercase;">Exclusive OTT Experience</span>
+    </div>
+  </section>
+  <div id="root"></div>
+</div>
+
+<!-- Footer -->
+<footer class="site-footer">
+  <div class="footer-brand">
+    <div class="footer-icon">
+      <img src="https://dedicated-team8k.store/logo.png" alt="Team 8K" style="width:24px;height:24px;border-radius:5px;object-fit:cover;">
+    </div>
+    <span class="footer-name">TEAM 8K</span>
+  </div>
+  <p>&copy; 2026 Team 8K. All Rights Reserved.</p>
+</footer>
+
+<script>
+  (function() {
+    var h = document.getElementById('site-header');
+    window.addEventListener('scroll', function() {
+      h.classList.toggle('scrolled', window.scrollY > 10);
+    }, { passive: true });
+  })();
+</script>
+
+<script type="module" src="/src/main.tsx"></script>
+</body>
+</html>
