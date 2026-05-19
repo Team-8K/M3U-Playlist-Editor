@@ -4,7 +4,7 @@ import {
   Search, Trash2, Download, Copy, RotateCcw, Tv,
   Share2,
   ToggleLeft, Link as LinkIcon, Save, ChevronLeft, RefreshCw,
-  Replace, X, CheckSquare, Undo2, Redo2, Plus,
+  Replace, X, CheckSquare, Undo2, Redo2, Plus, Database,
 } from "lucide-react";
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
@@ -42,6 +42,11 @@ export default function EditorPage() {
   const [params]  = useSearchParams();
   const sourceId  = params.get("source");
   const editedId  = params.get("edited");
+
+  // ── Source mode = opened from a raw source playlist (not an edited one) ──
+  // In source mode we show a "browse" UI: no Add Channels, no Find & Replace,
+  // and the save button says "Create Playlist" instead of "Save to Dashboard".
+  const [isSourceMode, setIsSourceMode] = useState(!!sourceId);
 
   // ── History (undo/redo) ───────────────────────────────────────
   const { channels, setChannels, resetChannels, undo, redo, canUndo, canRedo } = useHistory([]);
@@ -94,6 +99,7 @@ export default function EditorPage() {
   // ── Load saved edited playlist ────────────────────────────────
   useEffect(() => {
     if (!editedId) return;
+    setIsSourceMode(false); // editing a saved playlist = edit mode
     (async () => {
       const { data, error } = await supabase
         .from("edited_playlists").select("*").eq("id", editedId).single();
@@ -130,6 +136,7 @@ export default function EditorPage() {
   // ── Load from source playlist ─────────────────────────────────
   useEffect(() => {
     if (!sourceId) return;
+    setIsSourceMode(true); // opening a raw source = source mode
     (async () => {
       const { data, error } = await supabase
         .from("source_playlists").select("*").eq("id", sourceId).single();
@@ -174,6 +181,7 @@ export default function EditorPage() {
     setSelectedIds(new Set());
     setEditedRow(null);
     setPlaylistName("");
+    setIsSourceMode(true); // fresh load from LoaderPanel = source mode
 
     if (!existingRow) {
       try {
@@ -186,7 +194,7 @@ export default function EditorPage() {
           channel_count: parsed.length,
         });
         setSourceRow(row);
-        toast.success("Source playlist saved to dashboard");
+        toast.success("Source saved — click \"Create Playlist\" to build your edited playlist");
       } catch (err: any) {
         toast.error(`Could not save source: ${err?.message || "unknown error"}`);
       }
@@ -243,7 +251,6 @@ export default function EditorPage() {
   // ── Add channels from source ──────────────────────────────────
   const handleAddFromSource = (newChannels: Channel[]) => {
     setChannels(prev => {
-      // Avoid URL dupes
       const existingUrls = new Set(prev.map(c => c.url.trim().toLowerCase()));
       const toAdd = newChannels.filter(c => !existingUrls.has(c.url.trim().toLowerCase()));
       return [...prev, ...toAdd];
@@ -255,21 +262,17 @@ export default function EditorPage() {
     [channels]
   );
 
-  // ── Save to dashboard ─────────────────────────────────────────
+  // ── Save / Create dialog ──────────────────────────────────────
   const openSaveDialog = async () => {
     if (!channels.length) return;
     if (!playlistName) setPlaylistName(source || "My Playlist");
 
-    // Load current edited playlists to check the cap
     try {
       const rows = await listEditedPlaylists();
       setExistingList(rows);
-      // If editing an existing one, no cap check needed
       if (!editedRow) {
-        // Filter out the one we're currently editing (shouldn't exist, but safety)
         const others = rows.filter(r => r.id !== editedRow);
         if (others.length >= 2) {
-          // At cap — force overwrite selection, default to oldest
           setOverwriteTarget(others[others.length - 1].id);
         } else {
           setOverwriteTarget("new");
@@ -293,31 +296,28 @@ export default function EditorPage() {
       const m3uText = exportM3U(channels);
       const name    = playlistName.trim();
 
-      // Always upload to storage so Get Player URL always works
       const filename    = `edited-${Date.now()}.m3u`;
       const storagePath = await uploadPlaylistFile("edited-playlists", filename, m3uText);
 
-      // Determine target row: overwrite existing or create new
       const targetId = overwriteTarget !== "new" ? overwriteTarget : editedRow?.id ?? null;
 
       if (targetId) {
-        // Overwrite existing row — delete old storage file first to save space
         const existing = existingList.find(r => r.id === targetId) ?? editedRow;
         if (existing?.storage_path && existing.storage_path !== storagePath) {
           await supabase.storage.from("edited-playlists").remove([existing.storage_path]);
         }
         const updated = await updateEditedPlaylist(targetId, {
           name,
-          content:            null,   // always use storage_path, not inline
+          content:            null,
           storage_path:       storagePath,
           channel_count:      channels.length,
           enabled_count:      enabled.length,
           source_playlist_id: sourceRow?.id ?? (existing as any)?.source_playlist_id ?? null,
         });
         setEditedRow(updated);
+        setIsSourceMode(false); // now we're editing a saved playlist
         toast.success(`"${name}" updated!`);
       } else {
-        // Create new row
         const newRow = await saveNewEditedPlaylist({
           source_playlist_id: sourceRow?.id ?? null,
           name,
@@ -327,7 +327,8 @@ export default function EditorPage() {
           enabled_count: enabled.length,
         });
         setEditedRow(newRow);
-        toast.success(`"${name}" saved to dashboard!`);
+        setIsSourceMode(false); // now we're editing a saved playlist
+        toast.success(`"${name}" created and saved to your dashboard!`);
       }
     } catch (err: any) {
       toast.error(err?.message || "Save failed");
@@ -382,7 +383,6 @@ export default function EditorPage() {
   const handleReorder = (category: string, newOrder: Channel[]) => {
     setChannels(prev => {
       const others = prev.filter(c => c.category !== category);
-      // Preserve the original inter-category order by splicing back at the right position
       const firstIdx = prev.findIndex(c => c.category === category);
       const result = [...others];
       result.splice(firstIdx, 0, ...newOrder);
@@ -398,6 +398,40 @@ export default function EditorPage() {
         : c
     ));
     toast.success(`Category renamed to "${newName}"`);
+  };
+
+  // ── Move channels to an existing group ───────────────────────
+  const handleMoveToGroup = (ids: string[], targetGroup: string) => {
+    const idSet = new Set(ids);
+    setChannels(prev => prev.map(c =>
+      idSet.has(c.id)
+        ? { ...c, category: targetGroup, attributes: { ...c.attributes, "group-title": targetGroup } }
+        : c
+    ));
+    setSelectedIds(prev => { const n = new Set(prev); ids.forEach(id => n.delete(id)); return n; });
+    toast.success(`Moved ${ids.length} channel${ids.length > 1 ? "s" : ""} to "${targetGroup}"`);
+  };
+
+  // ── Move channels to a brand-new group ────────────────────────
+  const handleMoveToNewGroup = (ids: string[], newGroupName: string) => {
+    const name = newGroupName.trim();
+    if (!name) return;
+    const idSet = new Set(ids);
+    setChannels(prev => prev.map(c =>
+      idSet.has(c.id)
+        ? { ...c, category: name, attributes: { ...c.attributes, "group-title": name } }
+        : c
+    ));
+    setSelectedIds(prev => { const n = new Set(prev); ids.forEach(id => n.delete(id)); return n; });
+    toast.success(`Moved ${ids.length} channel${ids.length > 1 ? "s" : ""} to new group "${name}"`);
+  };
+
+  // ── Create an empty group placeholder ─────────────────────────
+  const handleCreateGroup = (groupName: string) => {
+    const name = groupName.trim();
+    if (!name) return;
+    // Group existence is derived from channels — notify user how to populate it
+    toast.success(`Group "${name}" ready — select channels and use "Move to" to populate it`);
   };
 
   // ── Derived state ─────────────────────────────────────────────
@@ -435,6 +469,7 @@ export default function EditorPage() {
     setSource(""); setSearch(""); setCatFilter("all");
     setDupes(0); setSourceRow(null); setEditedRow(null);
     setSelectedIds(new Set()); setPlaylistName("");
+    setIsSourceMode(false);
   };
 
   const handleDownload = () => {
@@ -477,6 +512,24 @@ export default function EditorPage() {
 
   const canResync     = sourceRow && sourceRow.source_type !== "file";
   const totalSelected = selectedIds.size;
+
+  // ── Derived label helpers ─────────────────────────────────────
+  const saveButtonLabel = saving
+    ? "Saving…"
+    : editedRow
+      ? "Update Playlist"
+      : isSourceMode
+        ? "Create Playlist"
+        : "Save to Dashboard";
+
+  const saveDialogTitle = editedRow ? "Update Playlist" : isSourceMode ? "Create Playlist" : "Save Playlist";
+  const saveDialogConfirmLabel = editedRow
+    ? "Update"
+    : existingList.length >= 2
+      ? "Replace & Save"
+      : isSourceMode
+        ? "Create"
+        : "Save";
 
   return (
     <div className="min-h-screen">
@@ -550,10 +603,19 @@ export default function EditorPage() {
                         <Tv className="h-5 w-5 text-primary" />
                       </div>
                       <div>
-                        <p className="text-xs text-muted-foreground truncate max-w-[280px]">
-                          {source}
-                          {editedRow && <span className="ml-2 text-primary/70">· editing saved playlist</span>}
-                        </p>
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <p className="text-xs text-muted-foreground truncate max-w-[280px]">
+                            {source}
+                          </p>
+                          {isSourceMode && !editedRow && (
+                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold uppercase tracking-widest bg-primary/10 border border-primary/25 text-primary">
+                              <Database className="h-2.5 w-2.5" /> Source
+                            </span>
+                          )}
+                          {editedRow && (
+                            <span className="text-primary/70 text-xs">· editing saved playlist</span>
+                          )}
+                        </div>
                         <p className="font-display font-bold text-lg">
                           <span className="text-gradient-gold">{enabledCount}</span>
                           <span className="text-muted-foreground"> / {channels.length} enabled</span>
@@ -591,25 +653,32 @@ export default function EditorPage() {
                       <Button variant="goldOutline" size="sm" onClick={() => handleEnableAll(false)}>
                         Disable all
                       </Button>
-                      {sourceRow && (
+
+                      {/* Add Channels & Find+Replace: only shown in edit mode (not source mode) */}
+                      {!isSourceMode && sourceRow && (
                         <Button variant="goldOutline" size="sm" onClick={() => setShowAddSource(true)} title="Browse your source playlist and add channels">
                           <Plus className="h-4 w-4" /> Add Channels
                         </Button>
                       )}
+
                       <Button variant="goldOutline" size="sm" onClick={handleDedupe}>
                         <Trash2 className="h-4 w-4" /> Dedupe
                       </Button>
-                      <Button variant="goldOutline" size="sm" onClick={() => setShowFindReplace(v => !v)}>
-                        <Replace className="h-4 w-4" /> Find &amp; Replace
-                      </Button>
+
+                      {!isSourceMode && (
+                        <Button variant="goldOutline" size="sm" onClick={() => setShowFindReplace(v => !v)}>
+                          <Replace className="h-4 w-4" /> Find &amp; Replace
+                        </Button>
+                      )}
+
                       <Button variant="goldOutline" size="sm" onClick={handleReset}>
                         <RotateCcw className="h-4 w-4" /> Reset
                       </Button>
                     </div>
                   </div>
 
-                  {/* Find & Replace panel */}
-                  {showFindReplace && (
+                  {/* Find & Replace panel — only in edit mode */}
+                  {!isSourceMode && showFindReplace && (
                     <div className="bg-gradient-card ring-gold rounded-2xl p-5 shadow-elegant space-y-3">
                       <div className="flex items-center justify-between mb-1">
                         <h3 className="font-display font-bold text-sm text-primary uppercase tracking-widest">
@@ -719,6 +788,10 @@ export default function EditorPage() {
                           onSelectAllInCategory={handleSelectAllInCategory}
                           onDeleteSelected={handleDeleteSelected}
                           onReorder={handleReorder}
+                          allCategories={categories}
+                          onMoveToGroup={handleMoveToGroup}
+                          onMoveToNewGroup={handleMoveToNewGroup}
+                          onCreateGroup={handleCreateGroup}
                         />
                       ))
                     )}
@@ -728,12 +801,22 @@ export default function EditorPage() {
                   <div className="sticky bottom-0 z-30">
                     <div className="bg-gradient-card ring-gold rounded-2xl p-4 md:p-5 shadow-gold backdrop-blur-md flex flex-wrap gap-3 justify-between items-center">
                       <p className="text-sm">
-                        <span className="text-muted-foreground">Ready to export </span>
-                        <span className="text-gradient-gold font-display font-bold">{enabledCount}</span>
-                        <span className="text-muted-foreground"> channels</span>
+                        {isSourceMode && !editedRow ? (
+                          <>
+                            <span className="text-muted-foreground">Browsing source · </span>
+                            <span className="text-gradient-gold font-display font-bold">{enabledCount}</span>
+                            <span className="text-muted-foreground"> channels available</span>
+                          </>
+                        ) : (
+                          <>
+                            <span className="text-muted-foreground">Ready to export </span>
+                            <span className="text-gradient-gold font-display font-bold">{enabledCount}</span>
+                            <span className="text-muted-foreground"> channels</span>
+                          </>
+                        )}
                       </p>
                       <div className="flex gap-2 flex-wrap">
-                        {/* Copy, Download and Get URL only available for edited (not raw source) playlists */}
+                        {/* Copy, Download and Get URL only available for saved (edited) playlists */}
                         {editedRow && (
                           <>
                             <Button variant="goldOutline" onClick={handleCopy}>
@@ -755,7 +838,7 @@ export default function EditorPage() {
                         )}
                         <Button variant="gold" onClick={openSaveDialog} disabled={saving}>
                           <Save className="h-4 w-4" />
-                          {saving ? "Saving…" : editedRow ? "Update Playlist" : "Save to Dashboard"}
+                          {saveButtonLabel}
                         </Button>
                       </div>
                     </div>
@@ -767,12 +850,12 @@ export default function EditorPage() {
         </div>
       </SidebarProvider>
 
-      {/* ── Save / name dialog ─────────────────────────────────── */}
+      {/* ── Save / Create dialog ───────────────────────────────── */}
       <Dialog open={showSaveDialog} onOpenChange={setShowSaveDialog}>
         <DialogContent className="bg-gradient-card border-border">
           <DialogHeader>
             <DialogTitle className="font-display font-bold text-lg">
-              {editedRow ? "Update Playlist" : "Save Playlist"}
+              {saveDialogTitle}
             </DialogTitle>
           </DialogHeader>
           <div className="py-2 space-y-4">
@@ -829,7 +912,9 @@ export default function EditorPage() {
                 ? `This will overwrite "${editedRow.name}" in your dashboard.`
                 : existingList.length >= 2
                 ? "The selected playlist above will be replaced with your current edits."
-                : `${enabledCount} of ${channels.length} channels will be saved.`}
+                : isSourceMode
+                  ? `${enabledCount} of ${channels.length} channels will be saved as a new playlist.`
+                  : `${enabledCount} of ${channels.length} channels will be saved.`}
             </p>
           </div>
           <DialogFooter className="gap-2">
@@ -840,21 +925,25 @@ export default function EditorPage() {
               disabled={!playlistName.trim() || (!editedRow && existingList.length >= 2 && overwriteTarget === "new")}
             >
               <Save className="h-4 w-4" />
-              {editedRow ? "Update" : existingList.length >= 2 ? "Replace & Save" : "Save"}
+              {saveDialogConfirmLabel}
             </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
 
-      {/* Add from source modal */}
-      <AddFromSourceModal
-        open={showAddSource}
-        onClose={() => setShowAddSource(false)}
-        sourcePlaylistId={sourceRow?.id ?? editedRow?.source_playlist_id ?? null}
-        existingUrls={existingUrls}
-        onAdd={handleAddFromSource}
-      />
+      {/* Add from source modal — only in edit mode */}
+      {!isSourceMode && (
+        <AddFromSourceModal
+          open={showAddSource}
+          onClose={() => setShowAddSource(false)}
+          sourcePlaylistId={sourceRow?.id ?? editedRow?.source_playlist_id ?? null}
+          existingUrls={existingUrls}
+          onAdd={handleAddFromSource}
+        />
+      )}
 
     </div>
   );
 }
+
+
