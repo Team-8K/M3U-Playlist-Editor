@@ -3,8 +3,10 @@ import { useNavigate } from "react-router-dom";
 import {
   Plus, Trash2, Edit3, Download, Clock,
   ListMusic, ChevronRight, RefreshCw, FileMusic, Globe, Tv, Share2,
+  Check, X, Pencil,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { toast } from "sonner";
 import {
   supabase,
@@ -17,10 +19,14 @@ import {
 
 export default function Dashboard() {
   const navigate = useNavigate();
-  const [source,   setSource]   = useState<SourcePlaylistRow | null>(null);
-  const [edited,   setEdited]   = useState<EditedPlaylistRow[]>([]);
-  const [loading,  setLoading]  = useState(true);
+  const [source,    setSource]    = useState<SourcePlaylistRow | null>(null);
+  const [edited,    setEdited]    = useState<EditedPlaylistRow[]>([]);
+  const [loading,   setLoading]   = useState(true);
   const [resyncing, setResyncing] = useState(false);
+
+  // ── Inline rename for source playlist ────────────────────────
+  const [renamingSource, setRenamingSource] = useState(false);
+  const [sourceNameDraft, setSourceNameDraft] = useState("");
 
   const load = async () => {
     setLoading(true);
@@ -45,6 +51,33 @@ export default function Dashboard() {
   };
 
   useEffect(() => { load(); }, []);
+
+  // ── Rename source playlist ────────────────────────────────────
+  const startRenameSource = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (!source) return;
+    setSourceNameDraft(source.name);
+    setRenamingSource(true);
+  };
+
+  const commitRenameSource = async (e?: React.MouseEvent) => {
+    e?.stopPropagation();
+    if (!source || !sourceNameDraft.trim()) { setRenamingSource(false); return; }
+    if (sourceNameDraft.trim() === source.name) { setRenamingSource(false); return; }
+    const { error } = await supabase
+      .from("source_playlists")
+      .update({ name: sourceNameDraft.trim() })
+      .eq("id", source.id);
+    if (error) { toast.error("Could not rename playlist"); return; }
+    setSource(prev => prev ? { ...prev, name: sourceNameDraft.trim() } : prev);
+    setRenamingSource(false);
+    toast.success("Source playlist renamed");
+  };
+
+  const cancelRenameSource = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    setRenamingSource(false);
+  };
 
   // ── Resync source ─────────────────────────────────────────────
   const handleResync = async () => {
@@ -108,7 +141,7 @@ export default function Dashboard() {
     }
   };
 
-  // ── Get Player URL (signed URL, 1-year expiry) ───────────────
+  // ── Get Player URL ────────────────────────────────────────────
   const [generatingUrlId, setGeneratingUrlId] = useState<string | null>(null);
 
   const handleGetPlayerUrl = async (row: EditedPlaylistRow) => {
@@ -147,11 +180,6 @@ export default function Dashboard() {
     a.click();
     URL.revokeObjectURL(url);
     toast.success("Downloaded");
-  };
-
-  // ── Open edited playlist in editor ────────────────────────────
-  const handleOpenInEditor = (row: EditedPlaylistRow) => {
-    navigate(`/editor?edited=${row.id}`);
   };
 
   const sourceTypeIcon = (t: string) =>
@@ -236,9 +264,33 @@ export default function Dashboard() {
                 </div>
 
                 <div className="flex-1 min-w-0">
-                  <p className="font-semibold text-sm text-foreground truncate">
-                    {source.name}
-                  </p>
+                  {/* Inline rename */}
+                  {renamingSource ? (
+                    <div className="flex items-center gap-2" onClick={e => e.stopPropagation()}>
+                      <Input
+                        autoFocus
+                        value={sourceNameDraft}
+                        onChange={e => setSourceNameDraft(e.target.value)}
+                        onKeyDown={e => {
+                          if (e.key === "Enter") commitRenameSource();
+                          if (e.key === "Escape") setRenamingSource(false);
+                        }}
+                        className="h-7 text-sm bg-background/60 border-border focus-visible:ring-primary"
+                      />
+                      <button onClick={commitRenameSource} className="text-primary hover:text-primary flex-shrink-0">
+                        <Check className="h-4 w-4" />
+                      </button>
+                      <button onClick={cancelRenameSource} className="text-muted-foreground hover:text-foreground flex-shrink-0">
+                        <X className="h-4 w-4" />
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="flex items-center gap-2 group/name">
+                      <p className="font-semibold text-sm text-foreground truncate">
+                        {source.name}
+                      </p>
+                    </div>
+                  )}
                   <div className="flex items-center gap-3 mt-0.5 flex-wrap">
                     <span className="text-xs text-muted-foreground capitalize">
                       {source.source_type}
@@ -265,7 +317,8 @@ export default function Dashboard() {
                   )}
                 </div>
 
-                <div className="flex items-center gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                {/* Action icons — visible on hover */}
+                <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
                   {source.source_type === "url" && (
                     <button
                       onClick={handleResync}
@@ -276,12 +329,13 @@ export default function Dashboard() {
                       <RefreshCw className={`h-4 w-4 ${resyncing ? "animate-spin" : ""}`} />
                     </button>
                   )}
+                  {/* Pencil = rename (not open in editor) */}
                   <button
-                    onClick={() => navigate(`/editor?source=${source.id}`)}
+                    onClick={startRenameSource}
                     className="p-2 rounded-lg hover:bg-primary/10 text-muted-foreground hover:text-primary transition-all"
-                    title="Open in editor"
+                    title="Rename source playlist"
                   >
-                    <Edit3 className="h-4 w-4" />
+                    <Pencil className="h-4 w-4" />
                   </button>
                   <button
                     onClick={deleteSource}
@@ -292,9 +346,11 @@ export default function Dashboard() {
                   </button>
                 </div>
 
+                {/* Arrow = open in editor */}
                 <ChevronRight
-                  className="h-4 w-4 text-muted-foreground/30 flex-shrink-0 group-hover:text-primary/50 transition-colors cursor-pointer"
+                  className="h-4 w-4 text-muted-foreground/30 flex-shrink-0 hover:text-primary/70 transition-colors cursor-pointer"
                   onClick={() => navigate(`/editor?source=${source.id}`)}
+                  title="Open in editor"
                 />
               </div>
             )}
@@ -327,7 +383,7 @@ export default function Dashboard() {
               <EmptyState
                 icon={<ListMusic className="h-8 w-8 text-muted-foreground/40" />}
                 title="No saved playlists yet"
-                description='After editing a playlist in the editor, click "Save to Dashboard" to store it here.'
+                description='Open your source in the editor, customise your channels, then click "Create Playlist" to save it here.'
                 cta="Go to Editor"
                 onClick={() => navigate("/editor")}
               />
@@ -363,9 +419,8 @@ export default function Dashboard() {
                     </div>
 
                     <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                      {/* Open in Editor — re-upload / continue editing */}
                       <button
-                        onClick={() => handleOpenInEditor(row)}
+                        onClick={() => navigate(`/editor?edited=${row.id}`)}
                         className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold border border-primary/30 text-primary hover:bg-primary/10 transition-all"
                         title="Open in Editor to continue editing"
                       >
@@ -433,3 +488,4 @@ function EmptyState({
     </div>
   );
 }
+
