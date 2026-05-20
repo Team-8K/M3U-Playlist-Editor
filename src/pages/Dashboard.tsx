@@ -12,7 +12,7 @@ import {
   supabase,
   listEditedPlaylists,
   deleteEditedPlaylist,
-  createPlaylistSignedUrl,
+  getOrCreatePlayerUrl,
   type SourcePlaylistRow,
   type EditedPlaylistRow,
 } from "@/lib/supabase";
@@ -151,7 +151,9 @@ export default function Dashboard() {
     }
     setGeneratingUrlId(row.id);
     try {
-      const url = await createPlaylistSignedUrl(row.storage_path);
+      const { url, updatedRow } = await getOrCreatePlayerUrl(row);
+      // Update local state so the stored player_url is reflected immediately
+      setEdited(prev => prev.map(r => r.id === updatedRow.id ? updatedRow : r));
       await navigator.clipboard.writeText(url);
       toast.success("Player URL copied! Paste it into TiviMate or any M3U player.", { duration: 5000 });
     } catch (err: any) {
@@ -488,4 +490,3 @@ function EmptyState({
     </div>
   );
 }
-
