@@ -32,7 +32,7 @@ import {
   uploadPlaylistFile,
   upsertSourcePlaylist,
   listEditedPlaylists,
-  createPlaylistSignedUrl,
+  getOrCreatePlayerUrl,
   type SourcePlaylistRow,
   type EditedPlaylistRow,
 } from "@/lib/supabase";
@@ -302,38 +302,44 @@ export default function EditorPage() {
       const m3uText = exportM3U(channels);
       const name    = playlistName.trim();
 
-      const filename    = `edited-${Date.now()}.m3u`;
-      const storagePath = await uploadPlaylistFile("edited-playlists", filename, m3uText);
-
       const targetId = overwriteTarget !== "new" ? overwriteTarget : editedRow?.id ?? null;
 
       if (targetId) {
+        // ── RE-SAVE: overwrite the same fixed file, keep same storage_path & player_url ──
         const existing = existingList.find(r => r.id === targetId) ?? editedRow;
-        if (existing?.storage_path && existing.storage_path !== storagePath) {
-          await supabase.storage.from("edited-playlists").remove([existing.storage_path]);
-        }
+        const fixedFilename   = `playlist-${targetId}.m3u`;
+        const fixedStoragePath = await uploadPlaylistFile("edited-playlists", fixedFilename, m3uText);
+        // storage_path should already equal fixedStoragePath — set it anyway for
+        // rows created before this fix that still have the old Date.now() path.
         const updated = await updateEditedPlaylist(targetId, {
           name,
           content:            null,
-          storage_path:       storagePath,
+          storage_path:       fixedStoragePath,
           channel_count:      channels.length,
           enabled_count:      enabled.length,
           source_playlist_id: sourceRow?.id ?? (existing as any)?.source_playlist_id ?? null,
+          // Never touch player_url here — it stays valid forever
         });
         setEditedRow(updated);
-        setIsSourceMode(false); // now we're editing a saved playlist
+        setIsSourceMode(false);
         toast.success(`"${name}" updated!`);
       } else {
+        // ── FIRST SAVE: create DB row first to get the id, then upload to fixed path ──
         const newRow = await saveNewEditedPlaylist({
           source_playlist_id: sourceRow?.id ?? null,
           name,
           content:       null,
-          storage_path:  storagePath,
+          storage_path:  null,   // will be set after upload below
           channel_count: channels.length,
           enabled_count: enabled.length,
         });
-        setEditedRow(newRow);
-        setIsSourceMode(false); // now we're editing a saved playlist
+        const fixedFilename    = `playlist-${newRow.id}.m3u`;
+        const fixedStoragePath = await uploadPlaylistFile("edited-playlists", fixedFilename, m3uText);
+        const finalRow = await updateEditedPlaylist(newRow.id, {
+          storage_path: fixedStoragePath,
+        });
+        setEditedRow(finalRow);
+        setIsSourceMode(false);
         toast.success(`"${name}" created and saved to your dashboard!`);
       }
     } catch (err: any) {
@@ -506,7 +512,8 @@ export default function EditorPage() {
     }
     setGeneratingUrl(true);
     try {
-      const url = await createPlaylistSignedUrl(editedRow.storage_path);
+      const { url, updatedRow } = await getOrCreatePlayerUrl(editedRow);
+      setEditedRow(updatedRow);   // keep local state in sync with stored player_url
       await navigator.clipboard.writeText(url);
       toast.success("Player URL copied! Paste it into TiviMate or any M3U player.", { duration: 5000 });
     } catch (err: any) {
