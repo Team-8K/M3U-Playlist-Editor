@@ -3,7 +3,7 @@ import { useNavigate } from "react-router-dom";
 import {
   Plus, Trash2, Edit3, Download, Clock,
   ListMusic, ChevronRight, RefreshCw, FileMusic, Globe, Tv, Share2,
-  Check, X, Pencil,
+  Check, X, Pencil, Copy,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -143,6 +143,8 @@ export default function Dashboard() {
 
   // ── Get Player URL ────────────────────────────────────────────
   const [generatingUrlId, setGeneratingUrlId] = useState<string | null>(null);
+  const [activePlayerUrl,  setActivePlayerUrl]  = useState<string | null>(null);
+  const [showUrlPanel,     setShowUrlPanel]      = useState(false);
 
   const handleGetPlayerUrl = async (row: EditedPlaylistRow) => {
     if (!row.storage_path) {
@@ -152,15 +154,22 @@ export default function Dashboard() {
     setGeneratingUrlId(row.id);
     try {
       const { url, updatedRow } = await getOrCreatePlayerUrl(row);
-      // Update local state so the stored player_url is reflected immediately
       setEdited(prev => prev.map(r => r.id === updatedRow.id ? updatedRow : r));
+      setActivePlayerUrl(url);
+      setShowUrlPanel(true);
       await navigator.clipboard.writeText(url);
-      toast.success("Player URL copied! Paste it into TiviMate or any M3U player.", { duration: 5000 });
+      toast.success("Player URL copied to clipboard!", { duration: 3000 });
     } catch (err: any) {
       toast.error(err?.message || "Could not generate player URL");
     } finally {
       setGeneratingUrlId(null);
     }
+  };
+
+  const handleCopyActiveUrl = async () => {
+    if (!activePlayerUrl) return;
+    await navigator.clipboard.writeText(activePlayerUrl);
+    toast.success("URL copied!");
   };
 
   // ── Download one edited playlist ──────────────────────────────
@@ -460,6 +469,81 @@ export default function Dashboard() {
           </section>
         </div>
       )}
+
+    {/* ── Player URL info panel ──────────────────────────────────── */}
+    {showUrlPanel && activePlayerUrl && (
+      <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
+        <div className="bg-gradient-card ring-gold rounded-2xl shadow-gold w-full max-w-lg p-6 space-y-5">
+
+          <div className="flex items-start justify-between gap-4">
+            <div>
+              <h2 className="font-display font-bold text-lg text-foreground">
+                Your Player URL
+              </h2>
+              <p className="text-xs text-muted-foreground mt-0.5">
+                Permanent · auto-updates when you re-edit · paste once into your player
+              </p>
+            </div>
+            <button onClick={() => setShowUrlPanel(false)} className="text-muted-foreground hover:text-foreground mt-0.5 flex-shrink-0">
+              <X className="h-5 w-5" />
+            </button>
+          </div>
+
+          <div className="bg-background/60 border border-primary/30 rounded-xl p-3 flex items-center gap-2">
+            <code className="flex-1 text-xs text-primary font-mono break-all leading-relaxed">
+              {activePlayerUrl}
+            </code>
+            <button
+              onClick={handleCopyActiveUrl}
+              className="flex-shrink-0 p-2 rounded-lg hover:bg-primary/10 text-primary transition-colors"
+              title="Copy URL"
+            >
+              <Copy className="h-4 w-4" />
+            </button>
+          </div>
+
+          <div className="space-y-3">
+            <p className="text-xs font-semibold text-muted-foreground uppercase tracking-widest">
+              How to add to your player
+            </p>
+            <div className="space-y-2.5 text-xs text-muted-foreground">
+              <div className="flex gap-3">
+                <span className="font-bold text-primary mt-0.5 w-32 flex-shrink-0">TiviMate</span>
+                <span>Settings → Playlists → Add Playlist → M3U URL → paste the URL above</span>
+              </div>
+              <div className="flex gap-3">
+                <span className="font-bold text-primary mt-0.5 w-32 flex-shrink-0">IPTV Smarters</span>
+                <span>Add User → Load Your Xtream or M3U → M3U URL → paste the URL above</span>
+              </div>
+              <div className="flex gap-3">
+                <span className="font-bold text-primary mt-0.5 w-32 flex-shrink-0">OTT Navigator</span>
+                <span>Add Playlist → M3U → paste the URL above</span>
+              </div>
+              <div className="flex gap-3">
+                <span className="font-bold text-primary mt-0.5 w-32 flex-shrink-0">VLC / Kodi</span>
+                <span>Open Network Stream → paste the URL above</span>
+              </div>
+            </div>
+            <div className="bg-primary/5 border border-primary/20 rounded-xl p-3 space-y-1.5 mt-1">
+              <p className="text-xs font-semibold text-primary">Important</p>
+              <ul className="text-xs text-muted-foreground space-y-1 list-disc list-inside">
+                <li>This URL is permanent — save it somewhere safe</li>
+                <li>Any edits you make update automatically — no need to re-paste</li>
+                <li>Your player refreshes the playlist on its own schedule (usually every 24h)</li>
+                <li>Keep this URL private — anyone with it can access your playlist</li>
+              </ul>
+            </div>
+          </div>
+
+          <button
+            onClick={handleCopyActiveUrl}
+            className="w-full py-2.5 rounded-xl bg-primary text-primary-foreground text-sm font-semibold hover:opacity-90 transition-opacity flex items-center justify-center gap-2"
+          >
+            <Copy className="h-4 w-4" /> Copy URL to Clipboard
+          </button>
+        </div>
+      </div>
+    )}
 
     </div>
   );
