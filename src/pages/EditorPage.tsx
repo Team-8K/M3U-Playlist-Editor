@@ -32,7 +32,7 @@ import {
   uploadPlaylistFile,
   upsertSourcePlaylist,
   listEditedPlaylists,
-  getOrCreateSharedPlaylistUrl,
+  createPlaylistSignedUrl,
   type SourcePlaylistRow,
   type EditedPlaylistRow,
 } from "@/lib/supabase";
@@ -500,9 +500,13 @@ export default function EditorPage() {
       toast.error("Save your playlist to the dashboard first, then you can get a player URL.");
       return;
     }
+    if (!editedRow.storage_path) {
+      toast.error("Re-save your playlist in the editor and try again.");
+      return;
+    }
     setGeneratingUrl(true);
     try {
-      const url = await getOrCreateSharedPlaylistUrl(editedRow.id);
+      const url = await createPlaylistSignedUrl(editedRow.storage_path);
       await navigator.clipboard.writeText(url);
       toast.success("Player URL copied! Paste it into TiviMate or any M3U player.", { duration: 5000 });
     } catch (err: any) {
