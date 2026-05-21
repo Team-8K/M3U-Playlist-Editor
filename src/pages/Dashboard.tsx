@@ -147,7 +147,7 @@ export default function Dashboard() {
   const [showUrlPanel,     setShowUrlPanel]      = useState(false);
 
   const handleGetPlayerUrl = async (row: EditedPlaylistRow) => {
-    if (!row.storage_path) {
+    if (!row.channels_json && !row.storage_path) {
       toast.error("Open this playlist in the Editor, re-save it, then try again.");
       return;
     }
