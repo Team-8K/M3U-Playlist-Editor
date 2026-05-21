@@ -49,7 +49,11 @@ exports.handler = async function (event) {
     };
   }
 
-  const sb = createClient(url, serviceKey, { auth: { persistSession: false } });
+  const sb = createClient(url, serviceKey, {
+    auth:     { persistSession: false },
+    realtime: { transport: null },      // disable WebSocket — not needed in a serverless function
+    global:   { fetch: fetch },
+  });
 
   try {
 
