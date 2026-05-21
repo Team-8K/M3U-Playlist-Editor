@@ -8,26 +8,31 @@
 
 # ── Functions ────────────────────────────────────────────────────────────
 [functions]
-  node_bundler = "esbuild"
+  node_bundler = "nft"
 
 # ── Redirects ────────────────────────────────────────────────────────────
 
-# 1. Playlist serve — matches /api/playlist/<slug>.m3u
-#    The splat (*) is used instead of :slug so the .m3u extension is included
-#    in the match. The full path (including .m3u) is forwarded to the function
-#    via event.path where the slug is extracted by regex.
+# 1. Playlist serve — splat matches the full path including .m3u extension
 [[redirects]]
   from   = "/api/playlist/*"
   to     = "/.netlify/functions/playlist"
   status = 200
+  force  = true
 
-# 2. All other API calls → matching function by name
+# 2. M3U proxy
+[[redirects]]
+  from   = "/api/m3u-proxy"
+  to     = "/.netlify/functions/m3u-proxy"
+  status = 200
+  force  = true
+
+# 3. All other API calls
 [[redirects]]
   from   = "/api/*"
   to     = "/.netlify/functions/:splat"
   status = 200
 
-# 3. SPA fallback — must be LAST
+# 4. SPA fallback — must be LAST
 [[redirects]]
   from   = "/*"
   to     = "/index.html"
