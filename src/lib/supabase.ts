@@ -189,8 +189,9 @@ function generateSlug(): string {
 export async function getOrCreatePlayerUrl(
   row: EditedPlaylistRow
 ): Promise<{ url: string; updatedRow: EditedPlaylistRow }> {
-  // Already generated — return stored URL immediately
-  if (row.player_url) {
+  // Already generated — return stored URL only if it's our clean Netlify URL
+  // (ignore old Supabase signed URLs that may be stored from a previous version)
+  if (row.player_url && !row.player_url.includes("supabase.co")) {
     return { url: row.player_url, updatedRow: row };
   }
 
