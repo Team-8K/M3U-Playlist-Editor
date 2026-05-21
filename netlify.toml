@@ -12,11 +12,13 @@
 
 # ── Redirects ────────────────────────────────────────────────────────────
 
-# 1. Playlist serve — must come BEFORE the generic /api/* rule
-#    so /api/playlist/*.m3u hits the right function
+# 1. Playlist serve — matches /api/playlist/<slug>.m3u
+#    The splat (*) is used instead of :slug so the .m3u extension is included
+#    in the match. The full path (including .m3u) is forwarded to the function
+#    via event.path where the slug is extracted by regex.
 [[redirects]]
-  from   = "/api/playlist/:slug"
-  to     = "/.netlify/functions/playlist/:slug"
+  from   = "/api/playlist/*"
+  to     = "/.netlify/functions/playlist"
   status = 200
 
 # 2. All other API calls → matching function by name
