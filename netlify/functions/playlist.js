@@ -28,15 +28,19 @@ exports.handler = async function (event) {
   }
 
   // ── Extract and validate slug ─────────────────────────────────
+  // event.path contains the full request path e.g. /api/playlist/b593d62dcc2a58b46b6aadfe.m3u
   const raw   = event.path || "";
+  console.log("[playlist] incoming path:", raw);
+
   const match = raw.match(/\/([a-f0-9]{24})(?:\.m3u)?(?:\/.*)?$/i);
 
   if (!match || !SLUG_RE.test(match[1].toLowerCase())) {
-    console.warn("[playlist] invalid slug in path:", raw);
+    console.warn("[playlist] invalid or missing slug in path:", raw);
     return { statusCode: 200, headers: M3U_HEADERS, body: EMPTY_M3U };
   }
 
   const slug = match[1].toLowerCase();
+  console.log("[playlist] extracted slug:", slug);
 
   // ── Require service role key ──────────────────────────────────
   const supabaseUrl = process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL;
