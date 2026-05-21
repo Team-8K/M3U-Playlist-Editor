@@ -33,7 +33,12 @@ function sbFetch(url, serviceKey, path, opts = {}) {
 }
 
 function sbStorage(url, serviceKey, storagePath) {
-  return fetch(`${url}/storage/v1/object/authenticated/${storagePath}`, {
+  // Service role uses /object/authenticated/<bucket>/<path>
+  // storagePath from DB is already "user-uuid/playlist-id.m3u" — prepend bucket name
+  const fullPath = storagePath.startsWith("edited-playlists/")
+    ? storagePath
+    : `edited-playlists/${storagePath}`;
+  return fetch(`${url}/storage/v1/object/authenticated/${fullPath}`, {
     headers: {
       "apikey":        serviceKey,
       "Authorization": `Bearer ${serviceKey}`,
