@@ -29,7 +29,6 @@ import {
   supabase,
   saveNewEditedPlaylist,
   updateEditedPlaylist,
-  uploadPlaylistFile,
   upsertSourcePlaylist,
   listEditedPlaylists,
   getOrCreatePlayerUrl,
@@ -302,43 +301,45 @@ export default function EditorPage() {
       const m3uText = exportM3U(channels);
       const name    = playlistName.trim();
 
+      // Build channel data for DB storage — only the fields needed to regenerate M3U
+      const channelsJson = channels.map(ch => ({
+        name:      ch.name,
+        url:       ch.url,
+        enabled:   ch.enabled,
+        category:  ch.category,
+        tvg_id:    ch.attributes?.["tvg-id"]   ?? "",
+        tvg_logo:  ch.attributes?.["tvg-logo"] ?? "",
+      }));
+
       const targetId = overwriteTarget !== "new" ? overwriteTarget : editedRow?.id ?? null;
 
       if (targetId) {
-        // ── RE-SAVE: overwrite the same fixed file, keep same storage_path & player_url ──
+        // ── RE-SAVE: update channels_json in DB — player URL stays the same ──
         const existing = existingList.find(r => r.id === targetId) ?? editedRow;
-        const fixedFilename   = `playlist-${targetId}.m3u`;
-        const fixedStoragePath = await uploadPlaylistFile("edited-playlists", fixedFilename, m3uText);
-        // storage_path should already equal fixedStoragePath — set it anyway for
-        // rows created before this fix that still have the old Date.now() path.
         const updated = await updateEditedPlaylist(targetId, {
           name,
+          channels_json:      channelsJson,
           content:            null,
-          storage_path:       fixedStoragePath,
+          storage_path:       null,
           channel_count:      channels.length,
           enabled_count:      enabled.length,
           source_playlist_id: sourceRow?.id ?? (existing as any)?.source_playlist_id ?? null,
-          // Never touch player_url here — it stays valid forever
         });
         setEditedRow(updated);
         setIsSourceMode(false);
         toast.success(`"${name}" updated!`);
       } else {
-        // ── FIRST SAVE: create DB row first to get the id, then upload to fixed path ──
+        // ── FIRST SAVE: one DB insert, no file upload needed ──
         const newRow = await saveNewEditedPlaylist({
           source_playlist_id: sourceRow?.id ?? null,
           name,
-          content:       null,
-          storage_path:  null,   // will be set after upload below
-          channel_count: channels.length,
-          enabled_count: enabled.length,
+          channels_json:      channelsJson,
+          content:            null,
+          storage_path:       null,
+          channel_count:      channels.length,
+          enabled_count:      enabled.length,
         });
-        const fixedFilename    = `playlist-${newRow.id}.m3u`;
-        const fixedStoragePath = await uploadPlaylistFile("edited-playlists", fixedFilename, m3uText);
-        const finalRow = await updateEditedPlaylist(newRow.id, {
-          storage_path: fixedStoragePath,
-        });
-        setEditedRow(finalRow);
+        setEditedRow(newRow);
         setIsSourceMode(false);
         toast.success(`"${name}" created and saved to your dashboard!`);
       }
@@ -1051,6 +1052,5 @@ export default function EditorPage() {
     </div>
   );
 }
-
 
 
