@@ -509,7 +509,7 @@ export default function EditorPage() {
       toast.error("Save your playlist to the dashboard first, then you can get a player URL.");
       return;
     }
-    if (!editedRow.storage_path) {
+    if (!editedRow.channels_json && !editedRow.storage_path) {
       toast.error("Re-save your playlist in the editor and try again.");
       return;
     }
