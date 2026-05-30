@@ -2,7 +2,7 @@ import { useEffect, useMemo, useCallback, useRef } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import {
   Search, Trash2, Download, Copy, RotateCcw, Tv,
-  Share2, ExternalLink,
+  Share2,
   ToggleLeft, Link as LinkIcon, Save, ChevronLeft, RefreshCw,
   Replace, X, CheckSquare, Undo2, Redo2, Plus, Database,
 } from "lucide-react";
@@ -29,6 +29,7 @@ import {
   supabase,
   saveNewEditedPlaylist,
   updateEditedPlaylist,
+  uploadPlaylistFile,
   upsertSourcePlaylist,
   listEditedPlaylists,
   getOrCreatePlayerUrl,
@@ -301,45 +302,43 @@ export default function EditorPage() {
       const m3uText = exportM3U(channels);
       const name    = playlistName.trim();
 
-      // Build channel data for DB storage — only the fields needed to regenerate M3U
-      const channelsJson = channels.map(ch => ({
-        name:      ch.name,
-        url:       ch.url,
-        enabled:   ch.enabled,
-        category:  ch.category,
-        tvg_id:    ch.attributes?.["tvg-id"]   ?? "",
-        tvg_logo:  ch.attributes?.["tvg-logo"] ?? "",
-      }));
-
       const targetId = overwriteTarget !== "new" ? overwriteTarget : editedRow?.id ?? null;
 
       if (targetId) {
-        // ── RE-SAVE: update channels_json in DB — player URL stays the same ──
+        // ── RE-SAVE: overwrite the same fixed file, keep same storage_path & player_url ──
         const existing = existingList.find(r => r.id === targetId) ?? editedRow;
+        const fixedFilename   = `playlist-${targetId}.m3u`;
+        const fixedStoragePath = await uploadPlaylistFile("edited-playlists", fixedFilename, m3uText);
+        // storage_path should already equal fixedStoragePath — set it anyway for
+        // rows created before this fix that still have the old Date.now() path.
         const updated = await updateEditedPlaylist(targetId, {
           name,
-          channels_json:      channelsJson,
           content:            null,
-          storage_path:       null,
+          storage_path:       fixedStoragePath,
           channel_count:      channels.length,
           enabled_count:      enabled.length,
           source_playlist_id: sourceRow?.id ?? (existing as any)?.source_playlist_id ?? null,
+          // Never touch player_url here — it stays valid forever
         });
         setEditedRow(updated);
         setIsSourceMode(false);
         toast.success(`"${name}" updated!`);
       } else {
-        // ── FIRST SAVE: one DB insert, no file upload needed ──
+        // ── FIRST SAVE: create DB row first to get the id, then upload to fixed path ──
         const newRow = await saveNewEditedPlaylist({
           source_playlist_id: sourceRow?.id ?? null,
           name,
-          channels_json:      channelsJson,
-          content:            null,
-          storage_path:       null,
-          channel_count:      channels.length,
-          enabled_count:      enabled.length,
+          content:       null,
+          storage_path:  null,   // will be set after upload below
+          channel_count: channels.length,
+          enabled_count: enabled.length,
         });
-        setEditedRow(newRow);
+        const fixedFilename    = `playlist-${newRow.id}.m3u`;
+        const fixedStoragePath = await uploadPlaylistFile("edited-playlists", fixedFilename, m3uText);
+        const finalRow = await updateEditedPlaylist(newRow.id, {
+          storage_path: fixedStoragePath,
+        });
+        setEditedRow(finalRow);
         setIsSourceMode(false);
         toast.success(`"${name}" created and saved to your dashboard!`);
       }
@@ -501,37 +500,27 @@ export default function EditorPage() {
   };
 
   const [generatingUrl, setGeneratingUrl] = useState(false);
-  const [playerUrl,     setPlayerUrl]     = useState<string | null>(null);
-  const [showUrlPanel,  setShowUrlPanel]  = useState(false);
 
   const handleGetUrl = async () => {
     if (!editedRow) {
       toast.error("Save your playlist to the dashboard first, then you can get a player URL.");
       return;
     }
-    if (!editedRow.channels_json && !editedRow.storage_path) {
+    if (!editedRow.storage_path) {
       toast.error("Re-save your playlist in the editor and try again.");
       return;
     }
     setGeneratingUrl(true);
     try {
       const { url, updatedRow } = await getOrCreatePlayerUrl(editedRow);
-      setEditedRow(updatedRow);
-      setPlayerUrl(url);
-      setShowUrlPanel(true);
+      setEditedRow(updatedRow);   // keep local state in sync with stored player_url
       await navigator.clipboard.writeText(url);
-      toast.success("Player URL copied to clipboard!", { duration: 3000 });
+      toast.success("Player URL copied! Paste it into TiviMate or any M3U player.", { duration: 5000 });
     } catch (err: any) {
       toast.error(err?.message || "Could not generate player URL");
     } finally {
       setGeneratingUrl(false);
     }
-  };
-
-  const handleCopyUrl = async () => {
-    if (!playerUrl) return;
-    await navigator.clipboard.writeText(playerUrl);
-    toast.success("URL copied!");
   };
 
   const canResync     = sourceRow && sourceRow.source_type !== "file";
@@ -877,85 +866,6 @@ export default function EditorPage() {
           </div>
         </div>
       </SidebarProvider>
-
-      {/* ── Player URL info panel ─────────────────────────────────── */}
-      {showUrlPanel && playerUrl && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
-          <div className="bg-gradient-card ring-gold rounded-2xl shadow-gold w-full max-w-lg p-6 space-y-5">
-
-            <div className="flex items-start justify-between gap-4">
-              <div>
-                <h2 className="font-display font-bold text-lg text-foreground">
-                  Your Player URL
-                </h2>
-                <p className="text-xs text-muted-foreground mt-0.5">
-                  Permanent · auto-updates when you re-edit · paste once into your player
-                </p>
-              </div>
-              <button onClick={() => setShowUrlPanel(false)} className="text-muted-foreground hover:text-foreground mt-0.5 flex-shrink-0">
-                <X className="h-5 w-5" />
-              </button>
-            </div>
-
-            {/* URL box */}
-            <div className="bg-background/60 border border-primary/30 rounded-xl p-3 flex items-center gap-2">
-              <code className="flex-1 text-xs text-primary font-mono break-all leading-relaxed">
-                {playerUrl}
-              </code>
-              <button
-                onClick={handleCopyUrl}
-                className="flex-shrink-0 p-2 rounded-lg hover:bg-primary/10 text-primary transition-colors"
-                title="Copy URL"
-              >
-                <Copy className="h-4 w-4" />
-              </button>
-            </div>
-
-            {/* Instructions */}
-            <div className="space-y-3">
-              <p className="text-xs font-semibold text-muted-foreground uppercase tracking-widest">
-                How to add to your player
-              </p>
-
-              <div className="space-y-2.5 text-xs text-muted-foreground">
-                <div className="flex gap-3">
-                  <span className="font-bold text-primary mt-0.5 w-32 flex-shrink-0">TiviMate</span>
-                  <span>Settings → Playlists → Add Playlist → M3U URL → paste the URL above</span>
-                </div>
-                <div className="flex gap-3">
-                  <span className="font-bold text-primary mt-0.5 w-32 flex-shrink-0">IPTV Smarters</span>
-                  <span>Add User → Load Your Xtream or M3U → M3U URL → paste the URL above</span>
-                </div>
-                <div className="flex gap-3">
-                  <span className="font-bold text-primary mt-0.5 w-32 flex-shrink-0">OTT Navigator</span>
-                  <span>Add Playlist → M3U → paste the URL above</span>
-                </div>
-                <div className="flex gap-3">
-                  <span className="font-bold text-primary mt-0.5 w-32 flex-shrink-0">VLC / Kodi</span>
-                  <span>Open Network Stream → paste the URL above</span>
-                </div>
-              </div>
-
-              <div className="bg-primary/5 border border-primary/20 rounded-xl p-3 space-y-1.5 mt-1">
-                <p className="text-xs font-semibold text-primary">Important</p>
-                <ul className="text-xs text-muted-foreground space-y-1 list-disc list-inside">
-                  <li>This URL is permanent — save it somewhere safe</li>
-                  <li>Any edits you make here update automatically — no need to re-paste</li>
-                  <li>Your player refreshes the playlist on its own schedule (usually every 24h)</li>
-                  <li>Keep this URL private — anyone with it can access your playlist</li>
-                </ul>
-              </div>
-            </div>
-
-            <button
-              onClick={handleCopyUrl}
-              className="w-full py-2.5 rounded-xl bg-primary text-primary-foreground text-sm font-semibold hover:opacity-90 transition-opacity flex items-center justify-center gap-2"
-            >
-              <Copy className="h-4 w-4" /> Copy URL to Clipboard
-            </button>
-          </div>
-        </div>
-      )}
 
       {/* ── Save / Create dialog ───────────────────────────────── */}
       <Dialog open={showSaveDialog} onOpenChange={setShowSaveDialog}>

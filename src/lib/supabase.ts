@@ -35,7 +35,6 @@ export type EditedPlaylistRow = {
   content?: string | null;
   storage_path?: string | null;
   player_url?: string | null;
-  channels_json?: any[] | null;
   channel_count: number;
   enabled_count: number;
   created_at: string;
@@ -163,50 +162,39 @@ export const saveSourcePlaylist = upsertSourcePlaylist;
 export const upsertEditedPlaylist = saveNewEditedPlaylist;
 export const saveEditedPlaylist   = saveNewEditedPlaylist;
 
+// ── Signed player URL (max expiry = 1 year) ───────────────────────────────
+
 /**
  * Return the permanent player URL for an edited playlist.
- * URL format: https://yoursite.netlify.app/api/playlist/SLUG.m3u
- *
- * - Generated once, stored in player_url, never changes
- * - The Netlify function reads channels_json from the DB on every player refresh
- * - No storage files, no signed URLs, no tokens
+ * - If already stored on the row, return it immediately (no new URL generated).
+ * - If not yet stored, generate a 100-year signed URL, persist it to the DB,
+ *   and return it. The URL is tied to the fixed storage path which never
+ *   changes after first save, so it stays valid through all future re-edits.
  */
 export async function getOrCreatePlayerUrl(
   row: EditedPlaylistRow
 ): Promise<{ url: string; updatedRow: EditedPlaylistRow }> {
-  // Already stored — return immediately
+  // Already have a stored URL — return it as-is
   if (row.player_url) {
     return { url: row.player_url, updatedRow: row };
   }
 
-  const uid = await getUid();
-
-  // Check if slug already exists for this playlist
-  const { data: existing } = await supabase
-    .from("shared_playlists")
-    .select("slug")
-    .eq("edited_playlist_id", row.id)
-    .maybeSingle();
-
-  let slug: string;
-
-  if (existing?.slug) {
-    slug = existing.slug;
-  } else {
-    // Generate 24-char cryptographically random hex slug
-    const bytes = new Uint8Array(12);
-    crypto.getRandomValues(bytes);
-    slug = Array.from(bytes).map(b => b.toString(16).padStart(2, "0")).join("");
-
-    const { error: ie } = await supabase
-      .from("shared_playlists")
-      .insert({ slug, edited_playlist_id: row.id, user_id: uid });
-    if (ie) throw new Error(ie.message || "Could not create player URL");
+  if (!row.storage_path) {
+    throw new Error("No storage path on this playlist. Re-save it in the Editor first.");
   }
 
-  const url = `${window.location.origin}/api/playlist/${slug}.m3u`;
+  // 100 years in seconds — effectively permanent
+  const PERMANENT = 100 * 365 * 24 * 60 * 60;
+  const { data, error } = await supabase.storage
+    .from("edited-playlists")
+    .createSignedUrl(row.storage_path, PERMANENT);
+  if (error || !data?.signedUrl) {
+    throw new Error(error?.message || "Could not generate player URL");
+  }
 
-  // Store on the playlist row so future calls return instantly
+  const url = data.signedUrl;
+
+  // Persist so it's never regenerated again
   const { data: updated, error: ue } = await supabase
     .from("edited_playlists")
     .update({ player_url: url })
@@ -216,4 +204,14 @@ export async function getOrCreatePlayerUrl(
   if (ue) throw ue;
 
   return { url, updatedRow: updated as EditedPlaylistRow };
+}
+
+/** @deprecated Use getOrCreatePlayerUrl instead */
+export async function createPlaylistSignedUrl(storagePath: string): Promise<string> {
+  const PERMANENT = 100 * 365 * 24 * 60 * 60;
+  const { data, error } = await supabase.storage
+    .from("edited-playlists")
+    .createSignedUrl(storagePath, PERMANENT);
+  if (error || !data?.signedUrl) throw new Error(error?.message || "Could not generate player URL");
+  return data.signedUrl;
 }

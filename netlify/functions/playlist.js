@@ -1,110 +1,145 @@
 /**
- * Team 8K — Playlist delivery
+ * Team 8K — Shared Playlist Serve Function
+ * Serves a saved edited playlist as raw M3U for TiviMate / Kodi / VLC
  *
- * Permanent URL: https://yoursite.netlify.app/api/playlist/{playlist-id}.m3u
+ * URL pattern (user-facing): /api/playlist/SLUG.m3u
+ * Netlify redirect:          /api/* → /.netlify/functions/:splat
+ * So this function is invoked as: /.netlify/functions/playlist/SLUG.m3u
+ * event.path will be:             /playlist/SLUG.m3u  OR  /SLUG.m3u
  *
- * The playlist UUID is the identifier — no random slugs, no extra tables.
- * On every player refresh, reads channels_json from edited_playlists and
- * generates fresh M3U text on the fly.
+ * TiviMate behaviour (per EPGMaster research):
+ *  - Sends GET requests
+ *  - Must receive HTTP 200 even on errors — non-200 causes player to disable playlist
+ *  - Content-Type must be audio/x-mpegurl
  */
 
-const M3U_HEADERS = {
-  "Access-Control-Allow-Origin":  "*",
-  "Access-Control-Allow-Methods": "GET, HEAD, OPTIONS",
-  "Access-Control-Allow-Headers": "Content-Type, User-Agent",
-  "Content-Type":  "audio/x-mpegurl; charset=utf-8",
-  "Cache-Control": "no-store, no-cache, must-revalidate",
-};
-
-// UUID pattern
-const UUID_RE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
+const { createClient } = require("@supabase/supabase-js");
 
 exports.handler = async function (event) {
+  // TiviMate and most players need a plain 200 with M3U content-type.
+  // Even errors should return 200 with an empty/minimal M3U so the player
+  // doesn't permanently disable the playlist URL.
+  const M3U_HEADERS = {
+    "Access-Control-Allow-Origin":  "*",
+    "Access-Control-Allow-Methods": "GET, HEAD, OPTIONS",
+    "Access-Control-Allow-Headers": "Content-Type, User-Agent",
+    "Content-Type":  "audio/x-mpegurl; charset=utf-8",
+    "Cache-Control": "no-store, no-cache, must-revalidate",
+  };
+
+  const emptyM3U = "#EXTM3U\n";
 
   if (event.httpMethod === "OPTIONS") {
     return { statusCode: 204, headers: M3U_HEADERS, body: "" };
   }
 
-  // Extract playlist UUID from path
-  // e.g. /api/playlist/fbd96839-5d1b-4117-ae01-f68a0a81fdd6.m3u
-  const src   = event.path || "";
-  const match = src.match(UUID_RE);
-  const id    = match ? match[0].toLowerCase() : null;
-
-  console.log("[playlist] path:", src, "id:", id);
-
-  if (!id) {
-    return { statusCode: 200, headers: M3U_HEADERS, body: "#EXTM3U\n" };
+  // ── Extract slug from path ────────────────────────────────────
+  // Possible paths: /playlist/SLUG.m3u  |  /SLUG.m3u  |  /SLUG
+  const raw   = event.path || "";
+  const match = raw.match(/\/([a-fA-F0-9]{12,})(?:\.m3u)?(?:\/.*)?$/);
+  if (!match) {
+    console.error("playlist.js: could not extract slug from path:", raw);
+    return { statusCode: 200, headers: M3U_HEADERS, body: emptyM3U };
   }
+  const slug = match[1];
 
+  // ── Supabase client ───────────────────────────────────────────
   const supabaseUrl = process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL;
-  const serviceKey  = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  const supabaseKey = process.env.VITE_SUPABASE_ANON_KEY || process.env.SUPABASE_ANON_KEY;
 
-  if (!supabaseUrl || !serviceKey) {
-    console.error("[playlist] missing env vars");
-    return { statusCode: 200, headers: M3U_HEADERS, body: "#EXTM3U\n" };
+  if (!supabaseUrl || !supabaseKey) {
+    console.error("playlist.js: missing Supabase env vars");
+    return { statusCode: 200, headers: M3U_HEADERS, body: emptyM3U };
   }
 
-  const headers = {
-    "apikey":        serviceKey,
-    "Authorization": `Bearer ${serviceKey}`,
-    "Content-Type":  "application/json",
-    "Accept":        "application/json",
-  };
+  const supabase = createClient(supabaseUrl, supabaseKey);
 
   try {
+    // ── Look up shared playlist by slug ───────────────────────────
+    const { data: shared, error: se } = await supabase
+      .from("shared_playlists")
+      .select("edited_playlist_id")
+      .eq("slug", slug)
+      .maybeSingle();
 
-    // Read channels_json and name directly from edited_playlists by UUID
-    const res  = await fetch(
-      `${supabaseUrl}/rest/v1/edited_playlists?id=eq.${id}&select=name,channels_json&limit=1`,
-      { headers }
-    );
-    const data = await res.json();
-    console.log("[playlist] result:", JSON.stringify(data).substring(0, 300));
-
-    if (!Array.isArray(data) || !data[0]) {
-      console.warn("[playlist] playlist not found:", id);
-      return { statusCode: 200, headers: M3U_HEADERS, body: "#EXTM3U\n" };
+    if (se || !shared) {
+      console.error("playlist.js: slug not found:", slug, se?.message);
+      return { statusCode: 200, headers: M3U_HEADERS, body: emptyM3U };
     }
 
-    const { name, channels_json } = data[0];
+    // ── Fetch edited playlist content ─────────────────────────────
+    const { data: playlist, error: pe } = await supabase
+      .from("edited_playlists")
+      .select("content, storage_path, name")
+      .eq("id", shared.edited_playlist_id)
+      .maybeSingle();
 
-    if (!channels_json || !Array.isArray(channels_json) || channels_json.length === 0) {
-      console.warn("[playlist] no channels_json for:", id);
-      return { statusCode: 200, headers: M3U_HEADERS, body: "#EXTM3U\n" };
+    if (pe || !playlist) {
+      console.error("playlist.js: playlist not found for id:", shared.edited_playlist_id, pe?.message);
+      return { statusCode: 200, headers: M3U_HEADERS, body: emptyM3U };
     }
 
-    // Generate M3U
-    const lines = ["#EXTM3U"];
+    let content = playlist.content;
 
-    for (const ch of channels_json) {
-      if (!ch.enabled) continue;
-      if (!ch.url)     continue;
+    // Fall back to storage if inline content not present
+    if (!content && playlist.storage_path) {
+      const { data: file, error: fe } = await supabase.storage
+        .from("edited-playlists")
+        .download(playlist.storage_path);
 
-      const attrs = [];
-      if (ch.tvg_id)   attrs.push(`tvg-id="${ch.tvg_id}"`);
-      if (ch.tvg_logo) attrs.push(`tvg-logo="${ch.tvg_logo}"`);
-      if (ch.category) attrs.push(`group-title="${ch.category}"`);
-
-      lines.push(`#EXTINF:-1 ${attrs.join(" ")},${ch.name}`);
-      lines.push(ch.url);
+      if (fe || !file) {
+        console.error("playlist.js: storage download failed:", fe?.message);
+        return { statusCode: 200, headers: M3U_HEADERS, body: emptyM3U };
+      }
+      content = await file.text();
     }
 
-    const count = (lines.length - 1) / 2;
-    console.log(`[playlist] serving ${count} channels for "${name}"`);
+    if (!content) {
+      console.error("playlist.js: playlist has no content, id:", shared.edited_playlist_id);
+      return { statusCode: 200, headers: M3U_HEADERS, body: emptyM3U };
+    }
+
+    // ── Filter to enabled channels only ───────────────────────────
+    // The stored M3U may contain disabled channels (lines starting with #).
+    // We serve only valid stream entries (pairs of #EXTINF + URL lines).
+    const lines   = content.split("\n");
+    const output  = ["#EXTM3U"];
+    let   pending = "";   // holds the #EXTINF line while we check the next
+
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      if (trimmed.startsWith("#EXTM3U")) continue;
+
+      if (trimmed.startsWith("#EXTINF")) {
+        pending = trimmed;
+      } else if (pending && (trimmed.startsWith("http://") || trimmed.startsWith("https://"))) {
+        output.push(pending);
+        output.push(trimmed);
+        pending = "";
+      } else {
+        pending = "";   // skip orphan lines
+      }
+    }
+
+    const m3uContent = output.join("\n") + "\n";
+    const filename   = (playlist.name || "playlist")
+      .replace(/[^a-z0-9]/gi, "-").toLowerCase();
+
+    console.log(`playlist.js: serving ${(output.length - 1) / 2} channels for slug ${slug}`);
 
     return {
       statusCode: 200,
       headers: {
         ...M3U_HEADERS,
-        "Content-Disposition": `inline; filename="${(name || "playlist").replace(/[^a-z0-9]/gi, "-")}.m3u"`,
-        "X-Channel-Count": String(count),
+        "Content-Disposition": `inline; filename="${filename}.m3u"`,
       },
-      body: lines.join("\n") + "\n",
+      body: m3uContent,
     };
 
   } catch (err) {
-    console.error("[playlist] error:", err?.message || err);
-    return { statusCode: 200, headers: M3U_HEADERS, body: "#EXTM3U\n" };
+    console.error("playlist.js: unexpected error:", err);
+    return { statusCode: 200, headers: M3U_HEADERS, body: emptyM3U };
   }
 };
+
