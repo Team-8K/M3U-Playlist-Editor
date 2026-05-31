@@ -7,6 +7,9 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import {
+  Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter,
+} from "@/components/ui/dialog";
 import { toast } from "sonner";
 import {
   supabase,
@@ -27,6 +30,9 @@ export default function Dashboard() {
   // ── Inline rename for source playlist ────────────────────────
   const [renamingSource, setRenamingSource] = useState(false);
   const [sourceNameDraft, setSourceNameDraft] = useState("");
+
+  // ── Delete source confirmation dialog ────────────────────────
+  const [showDeleteSourceDialog, setShowDeleteSourceDialog] = useState(false);
 
   const load = async () => {
     setLoading(true);
@@ -119,8 +125,19 @@ export default function Dashboard() {
   };
 
   // ── Delete source ─────────────────────────────────────────────
-  const deleteSource = async () => {
+  const handleDeleteSourceClick = () => {
     if (!source) return;
+    // If the user has saved edited playlists, warn them first
+    if (edited.length > 0) {
+      setShowDeleteSourceDialog(true);
+    } else {
+      confirmDeleteSource();
+    }
+  };
+
+  const confirmDeleteSource = async () => {
+    if (!source) return;
+    setShowDeleteSourceDialog(false);
     const { error } = await supabase
       .from("source_playlists")
       .delete()
@@ -340,7 +357,7 @@ export default function Dashboard() {
                     <Pencil className="h-4 w-4" />
                   </button>
                   <button
-                    onClick={deleteSource}
+                    onClick={handleDeleteSourceClick}
                     className="p-2 rounded-lg hover:bg-destructive/10 text-muted-foreground hover:text-destructive transition-all"
                     title="Delete"
                   >
@@ -462,6 +479,30 @@ export default function Dashboard() {
           )}
         </div>
       )}
+
+      {/* ── Delete source confirmation dialog ─────────────────── */}
+      <Dialog open={showDeleteSourceDialog} onOpenChange={setShowDeleteSourceDialog}>
+        <DialogContent className="bg-gradient-card border-border">
+          <DialogHeader>
+            <DialogTitle className="font-display font-bold text-lg">
+              Delete source playlist?
+            </DialogTitle>
+          </DialogHeader>
+          <p className="text-sm text-muted-foreground leading-relaxed py-2">
+            You have {edited.length} saved {edited.length === 1 ? "playlist" : "playlists"} built
+            from this source. {edited.length === 1 ? "It" : "They"} won't be deleted —
+            but {edited.length === 1 ? "it" : "they"} will be hidden until you re-import a source.
+          </p>
+          <DialogFooter className="gap-2">
+            <Button variant="goldOutline" onClick={() => setShowDeleteSourceDialog(false)}>
+              Cancel
+            </Button>
+            <Button variant="goldOutline" onClick={confirmDeleteSource}>
+              Delete Source
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
     </div>
   );
