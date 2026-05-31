@@ -358,7 +358,8 @@ export default function Dashboard() {
             )}
           </section>
 
-          {/* ── EDITED PLAYLISTS ─────────────────────────────────── */}
+          {/* ── EDITED PLAYLISTS — only shown once a source exists ── */}
+          {source && (
           <section>
             <div className="flex items-center justify-between mb-4">
               <div className="flex items-center gap-3">
@@ -386,8 +387,8 @@ export default function Dashboard() {
                 icon={<ListMusic className="h-8 w-8 text-muted-foreground/40" />}
                 title="No saved playlists yet"
                 description='Open your source in the editor, customise your channels, then click "Create Playlist" to save it here.'
-                cta="Go to Editor"
-                onClick={() => navigate("/editor")}
+                cta="Open in Editor"
+                onClick={() => navigate(`/editor?source=${source.id}`)}
               />
             ) : (
               <div className="space-y-3">
@@ -458,6 +459,7 @@ export default function Dashboard() {
               </div>
             )}
           </section>
+          )}
         </div>
       )}
 
