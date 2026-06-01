@@ -196,7 +196,7 @@ export default function EditorPage() {
     content: string,
     src: string,
     existingRow?: SourcePlaylistRow | null,
-    meta?: { type: "file" | "url" | "xtream"; url?: string; xtream_host?: string; xtream_user?: string; }
+    meta?: { type: "file" | "url"; url?: string; }
   ) => {
     const parsed = parseM3U(content);
     if (!parsed.length) { toast.error("No channels found in playlist"); return; }
@@ -216,8 +216,6 @@ export default function EditorPage() {
           name: src,
           source_type: meta?.type ?? "url",
           url: meta?.url ?? null,
-          xtream_host: meta?.xtream_host ?? null,
-          xtream_user: meta?.xtream_user ?? null,
           channel_count: parsed.length,
         });
         setSourceRow(row);
@@ -233,7 +231,7 @@ export default function EditorPage() {
   const onLoadFromPanel = useCallback((
     content: string,
     src: string,
-    meta?: { type: "file" | "url" | "xtream"; url?: string; xtream_host?: string; xtream_user?: string; }
+    meta?: { type: "file" | "url"; url?: string; }
   ) => {
     handleLoad(content, src, null, meta);
   }, [handleLoad]);
@@ -243,8 +241,8 @@ export default function EditorPage() {
     if (!sourceRow || sourceRow.source_type === "file") return;
     setResyncing(true);
     try {
-      if (sourceRow.source_type !== "url" || !sourceRow.url) {
-        toast.error("Xtream resync requires your provider password. Please reload via the loader panel.");
+      if (!sourceRow.url) {
+        toast.error("No URL found for this source.");
         return;
       }
       const res = await fetch("/api/m3u-proxy", {
@@ -262,8 +260,6 @@ export default function EditorPage() {
         name: sourceRow.name,
         source_type: sourceRow.source_type,
         url: sourceRow.url ?? null,
-        xtream_host: sourceRow.xtream_host ?? null,
-        xtream_user: sourceRow.xtream_user ?? null,
         channel_count: parsed.length,
       });
       setSourceRow(updated);

@@ -17,11 +17,8 @@ export type SourcePlaylistRow = {
   id: string;
   user_id: string;
   name: string;
-  source_type: "file" | "url" | "xtream";
+  source_type: "file" | "url";
   url?: string | null;
-  xtream_host?: string | null;
-  xtream_user?: string | null;
-  storage_path?: string | null;
   channel_count: number;
   created_at: string;
   updated_at: string;
@@ -32,10 +29,8 @@ export type EditedPlaylistRow = {
   user_id: string;
   source_playlist_id?: string | null;
   name: string;
-  content?: string | null;        // full M3U text (file-sourced playlists) or null
-  edits_json?: string | null;     // JSON-serialised PlaylistDiff for url-sourced playlists
-  storage_path?: string | null;   // legacy — no longer written, kept for old rows
-  player_url?: string | null;     // cached stable player URL shown on dashboard
+  edits_json?: string | null;
+  player_url?: string | null;
   channel_count: number;
   enabled_count: number;
   created_at: string;
@@ -126,11 +121,8 @@ export async function listEditedPlaylists(): Promise<EditedPlaylistRow[]> {
   return (data ?? []) as EditedPlaylistRow[];
 }
 
-/** Delete one edited playlist (and its storage file if any) */
+/** Delete one edited playlist */
 export async function deleteEditedPlaylist(row: EditedPlaylistRow): Promise<void> {
-  if (row.storage_path) {
-    await supabase.storage.from("edited-playlists").remove([row.storage_path]);
-  }
   const { error } = await supabase
     .from("edited_playlists")
     .delete()
