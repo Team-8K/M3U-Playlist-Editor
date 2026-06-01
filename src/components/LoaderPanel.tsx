@@ -105,11 +105,10 @@ export const LoaderPanel = ({ onLoad }: Props) => {
       return;
     }
 
-    await fetchViaProxy(
-      { host, username: user, password: pass },
-      host.replace(/^https?:\/\//, ""),
-      { type: "xtream", xtream_host: host, xtream_user: user }
-    );
+    // Build the M3U URL from the credentials and treat it identically
+    // to a URL paste — same proxy call, same row structure in Supabase.
+    const m3uUrl = `${host}/get.php?username=${encodeURIComponent(user)}&password=${encodeURIComponent(pass)}&type=m3u_plus&output=ts`;
+    await fetchViaProxy({ url: m3uUrl }, "Remote playlist", { type: "url", url: m3uUrl });
   };
 
   // ── M3U URL submit ────────────────────────────────────────────
