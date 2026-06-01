@@ -9,10 +9,8 @@ interface Props {
     content: string,
     source: string,
     meta?: {
-      type: "file" | "url" | "xtream";
+      type: "file" | "url";
       url?: string;
-      xtream_host?: string;
-      xtream_user?: string;
     }
   ) => void;
 }
@@ -51,10 +49,8 @@ export const LoaderPanel = ({ onLoad }: Props) => {
     body: Record<string, string>,
     sourceName: string,
     meta?: {
-      type: "file" | "url" | "xtream";
+      type: "file" | "url";
       url?: string;
-      xtream_host?: string;
-      xtream_user?: string;
     }
   ) => {
     setLoading(true);
@@ -105,10 +101,14 @@ export const LoaderPanel = ({ onLoad }: Props) => {
       return;
     }
 
-    // Build the M3U URL from the credentials and treat it identically
-    // to a URL paste — same proxy call, same row structure in Supabase.
-    const m3uUrl = `${host}/get.php?username=${encodeURIComponent(user)}&password=${encodeURIComponent(pass)}&type=m3u_plus&output=ts`;
-    await fetchViaProxy({ url: m3uUrl }, "Remote playlist", { type: "url", url: m3uUrl });
+    // Build the full M3U URL — same format as Paste URL mode
+    const fullUrl = `${host}/get.php?username=${encodeURIComponent(user)}&password=${encodeURIComponent(pass)}&type=m3u_plus`;
+
+    await fetchViaProxy(
+      { url: fullUrl },
+      host.replace(/^https?:\/\//, ""),
+      { type: "url", url: fullUrl }
+    );
   };
 
   // ── M3U URL submit ────────────────────────────────────────────
