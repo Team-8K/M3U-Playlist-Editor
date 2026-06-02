@@ -92,6 +92,10 @@ export default function Dashboard() {
       toast.info("File playlists cannot be resynced — reload via the Editor.");
       return;
     }
+    if (source.source_type === "xtream") {
+      toast.info("Xtream resync requires your provider password — use the Editor to reload.");
+      return;
+    }
     if (!source.url) return;
 
     setResyncing(true);
@@ -312,6 +316,11 @@ export default function Dashboard() {
                   {source.url && (
                     <p className="text-xs text-muted-foreground/60 font-mono truncate mt-0.5 max-w-xs">
                       {source.url}
+                    </p>
+                  )}
+                  {source.xtream_host && (
+                    <p className="text-xs text-muted-foreground/60 font-mono truncate mt-0.5 max-w-xs">
+                      {source.xtream_host} · {source.xtream_user}
                     </p>
                   )}
                 </div>
