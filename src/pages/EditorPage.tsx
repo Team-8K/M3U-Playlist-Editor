@@ -347,7 +347,6 @@ export default function EditorPage() {
 
       const patch = {
         name,
-        content:            m3uText,   // always store full M3U as fallback
         edits_json,
         channel_count:      channels.length,
         enabled_count:      enabled.length,
