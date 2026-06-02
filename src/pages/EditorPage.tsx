@@ -23,13 +23,12 @@ import { SummarySidebar } from "@/components/SummarySidebar";
 import { AddFromSourceModal } from "@/components/AddFromSourceModal";
 import { useHistory } from "@/hooks/useHistory";
 import {
-  Channel, parseM3U, exportM3U, dedupeByUrl, groupByCategory,
+  Channel, parseM3U, exportM3U, dedupeByUrl, groupByCategory, buildDiff, applyDiff,
 } from "@/lib/m3u";
 import {
   supabase,
   saveNewEditedPlaylist,
   updateEditedPlaylist,
-  uploadPlaylistFile,
   upsertSourcePlaylist,
   listEditedPlaylists,
   getOrCreatePlayerUrl,
@@ -108,29 +107,51 @@ export default function EditorPage() {
       if (error || !data) { toast.error("Could not load saved playlist"); setLoadingPlaylist(false); return; }
       const row = data as EditedPlaylistRow;
       setEditedRow(row);
-
-      let content = row.content;
-      if (!content && row.storage_path) {
-        const { data: file, error: fe } = await supabase.storage
-          .from("edited-playlists").download(row.storage_path);
-        if (fe || !file) { toast.error("Could not download playlist file"); return; }
-        content = await file.text();
-      }
-      if (!content) { toast.error("Playlist has no content"); return; }
-
-      const parsed = parseM3U(content);
-      if (!parsed.length) { toast.error("No channels found in saved playlist"); return; }
-      resetChannels(parsed);
-      setSource(row.name);
       setPlaylistName(row.name);
+      setSource(row.name);
 
-      // Also load the source row so "Add from source" works
+      // Load source row first so "Add from source" works
+      let sourceRowData: SourcePlaylistRow | null = null;
       if (row.source_playlist_id) {
         const { data: sr } = await supabase
           .from("source_playlists").select("*").eq("id", row.source_playlist_id).single();
-        if (sr) setSourceRow(sr as SourcePlaylistRow);
+        if (sr) { sourceRowData = sr as SourcePlaylistRow; setSourceRow(sr as SourcePlaylistRow); }
       }
-      toast.success(`Loaded "${row.name}" — ${parsed.length.toLocaleString()} channels`);
+
+      // Prefer diff approach: fetch source live + apply edits_json
+      if (row.edits_json && sourceRowData?.url) {
+        try {
+          const res = await fetch("/api/m3u-proxy", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ url: sourceRowData.url }),
+          });
+          if (res.ok) {
+            const text = await res.text();
+            const sourceChannels = parseM3U(text);
+            const diff = JSON.parse(row.edits_json);
+            const applied = applyDiff(sourceChannels, diff);
+            if (applied.length) {
+              resetChannels(applied);
+              toast.success(`Loaded "${row.name}" — ${applied.length.toLocaleString()} channels`);
+              setLoadingPlaylist(false);
+              return;
+            }
+          }
+        } catch { /* fall through to content */ }
+      }
+
+      // Fallback: use stored content (file-sourced playlists or if source is unreachable)
+      if (row.content) {
+        const parsed = parseM3U(row.content);
+        if (!parsed.length) { toast.error("No channels found in saved playlist"); setLoadingPlaylist(false); return; }
+        resetChannels(parsed);
+        toast.success(`Loaded "${row.name}" — ${parsed.length.toLocaleString()} channels`);
+        setLoadingPlaylist(false);
+        return;
+      }
+
+      toast.error("Could not load playlist — no content or source available");
       setLoadingPlaylist(false);
     })();
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -175,7 +196,7 @@ export default function EditorPage() {
     content: string,
     src: string,
     existingRow?: SourcePlaylistRow | null,
-    meta?: { type: "file" | "url" | "xtream"; url?: string; xtream_host?: string; xtream_user?: string; }
+    meta?: { type: "file" | "url"; url?: string; }
   ) => {
     const parsed = parseM3U(content);
     if (!parsed.length) { toast.error("No channels found in playlist"); return; }
@@ -195,8 +216,6 @@ export default function EditorPage() {
           name: src,
           source_type: meta?.type ?? "url",
           url: meta?.url ?? null,
-          xtream_host: meta?.xtream_host ?? null,
-          xtream_user: meta?.xtream_user ?? null,
           channel_count: parsed.length,
         });
         setSourceRow(row);
@@ -212,7 +231,7 @@ export default function EditorPage() {
   const onLoadFromPanel = useCallback((
     content: string,
     src: string,
-    meta?: { type: "file" | "url" | "xtream"; url?: string; xtream_host?: string; xtream_user?: string; }
+    meta?: { type: "file" | "url"; url?: string; }
   ) => {
     handleLoad(content, src, null, meta);
   }, [handleLoad]);
@@ -222,8 +241,8 @@ export default function EditorPage() {
     if (!sourceRow || sourceRow.source_type === "file") return;
     setResyncing(true);
     try {
-      if (sourceRow.source_type !== "url" || !sourceRow.url) {
-        toast.error("Xtream resync requires your provider password. Please reload via the loader panel.");
+      if (!sourceRow.url) {
+        toast.error("No URL found for this source.");
         return;
       }
       const res = await fetch("/api/m3u-proxy", {
@@ -241,8 +260,6 @@ export default function EditorPage() {
         name: sourceRow.name,
         source_type: sourceRow.source_type,
         url: sourceRow.url ?? null,
-        xtream_host: sourceRow.xtream_host ?? null,
-        xtream_user: sourceRow.xtream_user ?? null,
         channel_count: parsed.length,
       });
       setSourceRow(updated);
@@ -298,47 +315,52 @@ export default function EditorPage() {
     setSaving(true);
     setShowSaveDialog(false);
     try {
-      const enabled = channels.filter(c => c.enabled);
-      const m3uText = exportM3U(channels);
-      const name    = playlistName.trim();
-
+      const enabled  = channels.filter(c => c.enabled);
+      const m3uText  = exportM3U(channels);
+      const name     = playlistName.trim();
       const targetId = overwriteTarget !== "new" ? overwriteTarget : editedRow?.id ?? null;
 
+      // Build diff if we have a url-sourced source playlist
+      // For file-sourced playlists, edits_json stays null and we store full content
+      let edits_json: string | null = null;
+      if (sourceRow?.url) {
+        // We need the original source channels to compute the diff.
+        // Fetch them fresh so the diff is accurate even after a resync.
+        try {
+          const res = await fetch("/api/m3u-proxy", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ url: sourceRow.url }),
+          });
+          if (res.ok) {
+            const text = await res.text();
+            const sourceChannels = parseM3U(text);
+            const diff = buildDiff(sourceChannels, channels);
+            edits_json = JSON.stringify(diff);
+          }
+        } catch { /* non-fatal — fall back to storing full content */ }
+      }
+
+      const patch = {
+        name,
+        content:            m3uText,   // always store full M3U as fallback
+        edits_json,
+        channel_count:      channels.length,
+        enabled_count:      enabled.length,
+        source_playlist_id: sourceRow?.id ?? null,
+        // Never touch player_url — it stays valid forever
+      };
+
       if (targetId) {
-        // ── RE-SAVE: overwrite the same fixed file, keep same storage_path & player_url ──
-        const existing = existingList.find(r => r.id === targetId) ?? editedRow;
-        const fixedFilename   = `playlist-${targetId}.m3u`;
-        const fixedStoragePath = await uploadPlaylistFile("edited-playlists", fixedFilename, m3uText);
-        // storage_path should already equal fixedStoragePath — set it anyway for
-        // rows created before this fix that still have the old Date.now() path.
-        const updated = await updateEditedPlaylist(targetId, {
-          name,
-          content:            null,
-          storage_path:       fixedStoragePath,
-          channel_count:      channels.length,
-          enabled_count:      enabled.length,
-          source_playlist_id: sourceRow?.id ?? (existing as any)?.source_playlist_id ?? null,
-          // Never touch player_url here — it stays valid forever
-        });
+        // ── RE-SAVE: overwrite same row, player_url unchanged ──
+        const updated = await updateEditedPlaylist(targetId, patch);
         setEditedRow(updated);
         setIsSourceMode(false);
         toast.success(`"${name}" updated!`);
       } else {
-        // ── FIRST SAVE: create DB row first to get the id, then upload to fixed path ──
-        const newRow = await saveNewEditedPlaylist({
-          source_playlist_id: sourceRow?.id ?? null,
-          name,
-          content:       null,
-          storage_path:  null,   // will be set after upload below
-          channel_count: channels.length,
-          enabled_count: enabled.length,
-        });
-        const fixedFilename    = `playlist-${newRow.id}.m3u`;
-        const fixedStoragePath = await uploadPlaylistFile("edited-playlists", fixedFilename, m3uText);
-        const finalRow = await updateEditedPlaylist(newRow.id, {
-          storage_path: fixedStoragePath,
-        });
-        setEditedRow(finalRow);
+        // ── FIRST SAVE ──
+        const newRow = await saveNewEditedPlaylist(patch);
+        setEditedRow(newRow);
         setIsSourceMode(false);
         toast.success(`"${name}" created and saved to your dashboard!`);
       }
@@ -506,14 +528,10 @@ export default function EditorPage() {
       toast.error("Save your playlist to the dashboard first, then you can get a player URL.");
       return;
     }
-    if (!editedRow.storage_path) {
-      toast.error("Re-save your playlist in the editor and try again.");
-      return;
-    }
     setGeneratingUrl(true);
     try {
       const { url, updatedRow } = await getOrCreatePlayerUrl(editedRow);
-      setEditedRow(updatedRow);   // keep local state in sync with stored player_url
+      setEditedRow(updatedRow);
       await navigator.clipboard.writeText(url);
       toast.success("Player URL copied! Paste it into TiviMate or any M3U player.", { duration: 5000 });
     } catch (err: any) {
