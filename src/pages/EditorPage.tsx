@@ -23,7 +23,7 @@ import { SummarySidebar } from "@/components/SummarySidebar";
 import { AddFromSourceModal } from "@/components/AddFromSourceModal";
 import { useHistory } from "@/hooks/useHistory";
 import {
-  Channel, parseM3U, exportM3U, dedupeByUrl, groupByCategory,
+  Channel, parseM3U, exportM3U, dedupeByUrl, groupByCategory, buildDiff, applyDiff,
 } from "@/lib/m3u";
 import {
   supabase,
@@ -35,29 +35,6 @@ import {
   type SourcePlaylistRow,
   type EditedPlaylistRow,
 } from "@/lib/supabase";
-import { buildDiff, applyDiff } from "@/lib/playlistDiff";
-
-/** Re-fetch + parse the source M3U behind a source_playlists row. */
-async function loadSourceChannels(src: SourcePlaylistRow): Promise<Channel[]> {
-  let text = "";
-  if (src.source_type === "url" && src.url) {
-    const res = await fetch("/api/m3u-proxy", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ url: src.url }),
-    });
-    if (!res.ok) throw new Error("Could not re-fetch source URL");
-    text = await res.text();
-  } else if (src.storage_path) {
-    const { data, error } = await supabase.storage
-      .from("source-playlists").download(src.storage_path);
-    if (error || !data) throw new Error("Could not download source file");
-    text = await data.text();
-  } else {
-    throw new Error("Source has no URL or file — cannot rebuild");
-  }
-  return parseM3U(text);
-}
 
 export default function EditorPage() {
   const navigate  = useNavigate();
@@ -119,44 +96,66 @@ export default function EditorPage() {
     return () => window.removeEventListener("keydown", handler);
   }, []);
 
-  // ── Load saved edited playlist (rebuild from source + diff) ──
+  // ── Load saved edited playlist ────────────────────────────────
   useEffect(() => {
     if (!editedId) return;
     setIsSourceMode(false);
     setLoadingPlaylist(true);
     (async () => {
-      try {
-        const { data, error } = await supabase
-          .from("edited_playlists").select("*").eq("id", editedId).single();
-        if (error || !data) throw new Error("Could not load saved playlist");
-        const row = data as EditedPlaylistRow;
-        setEditedRow(row);
+      const { data, error } = await supabase
+        .from("edited_playlists").select("*").eq("id", editedId).single();
+      if (error || !data) { toast.error("Could not load saved playlist"); setLoadingPlaylist(false); return; }
+      const row = data as EditedPlaylistRow;
+      setEditedRow(row);
+      setPlaylistName(row.name);
+      setSource(row.name);
 
-        if (!row.source_playlist_id) {
-          throw new Error("Saved playlist has no source — cannot rebuild");
-        }
-        const { data: sr, error: srErr } = await supabase
+      // Load source row first so "Add from source" works
+      let sourceRowData: SourcePlaylistRow | null = null;
+      if (row.source_playlist_id) {
+        const { data: sr } = await supabase
           .from("source_playlists").select("*").eq("id", row.source_playlist_id).single();
-        if (srErr || !sr) throw new Error("Could not load source playlist");
-        setSourceRow(sr as SourcePlaylistRow);
-
-        const sourceChannels = await loadSourceChannels(sr as SourcePlaylistRow);
-        const rebuilt = applyDiff(sourceChannels, row.edits_json);
-        if (!rebuilt.length) throw new Error("Rebuilt playlist has no channels");
-
-        resetChannels(rebuilt);
-        setSource(row.name);
-        setPlaylistName(row.name);
-        toast.success(`Loaded "${row.name}" — ${rebuilt.length.toLocaleString()} channels`);
-      } catch (err: any) {
-        toast.error(err?.message || "Could not load saved playlist");
-      } finally {
-        setLoadingPlaylist(false);
+        if (sr) { sourceRowData = sr as SourcePlaylistRow; setSourceRow(sr as SourcePlaylistRow); }
       }
+
+      // Prefer diff approach: fetch source live + apply edits_json
+      if (row.edits_json && sourceRowData?.url) {
+        try {
+          const res = await fetch("/api/m3u-proxy", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ url: sourceRowData.url }),
+          });
+          if (res.ok) {
+            const text = await res.text();
+            const sourceChannels = parseM3U(text);
+            const diff = JSON.parse(row.edits_json);
+            const applied = applyDiff(sourceChannels, diff);
+            if (applied.length) {
+              resetChannels(applied);
+              toast.success(`Loaded "${row.name}" — ${applied.length.toLocaleString()} channels`);
+              setLoadingPlaylist(false);
+              return;
+            }
+          }
+        } catch { /* fall through to content */ }
+      }
+
+      // Fallback: use stored content (file-sourced playlists or if source is unreachable)
+      if (row.content) {
+        const parsed = parseM3U(row.content);
+        if (!parsed.length) { toast.error("No channels found in saved playlist"); setLoadingPlaylist(false); return; }
+        resetChannels(parsed);
+        toast.success(`Loaded "${row.name}" — ${parsed.length.toLocaleString()} channels`);
+        setLoadingPlaylist(false);
+        return;
+      }
+
+      toast.error("Could not load playlist — no content or source available");
+      setLoadingPlaylist(false);
     })();
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [editedId]);
-
 
   // ── Load from source playlist ─────────────────────────────────
   useEffect(() => {
@@ -320,39 +319,50 @@ export default function EditorPage() {
     setSaving(true);
     setShowSaveDialog(false);
     try {
-      if (!sourceRow) throw new Error("No source loaded — cannot save metadata-only edit");
-
-      const enabled = channels.filter(c => c.enabled);
-      const name    = playlistName.trim();
-
-      // Build the diff against a freshly-parsed source. We re-fetch so the
-      // diff is computed against the exact same baseline that the share
-      // function will use when rebuilding for players.
-      const sourceChannels = await loadSourceChannels(sourceRow);
-      const edits_json = buildDiff(sourceChannels, channels);
-
+      const enabled  = channels.filter(c => c.enabled);
+      const m3uText  = exportM3U(channels);
+      const name     = playlistName.trim();
       const targetId = overwriteTarget !== "new" ? overwriteTarget : editedRow?.id ?? null;
 
+      // Build diff if we have a url-sourced source playlist
+      // For file-sourced playlists, edits_json stays null and we store full content
+      let edits_json: string | null = null;
+      if (sourceRow?.url) {
+        // We need the original source channels to compute the diff.
+        // Fetch them fresh so the diff is accurate even after a resync.
+        try {
+          const res = await fetch("/api/m3u-proxy", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ url: sourceRow.url }),
+          });
+          if (res.ok) {
+            const text = await res.text();
+            const sourceChannels = parseM3U(text);
+            const diff = buildDiff(sourceChannels, channels);
+            edits_json = JSON.stringify(diff);
+          }
+        } catch { /* non-fatal — fall back to storing full content */ }
+      }
+
+      const patch = {
+        name,
+        edits_json,
+        channel_count:      channels.length,
+        enabled_count:      enabled.length,
+        source_playlist_id: sourceRow?.id ?? null,
+        // Never touch player_url — it stays valid forever
+      };
+
       if (targetId) {
-        const existing = existingList.find(r => r.id === targetId) ?? editedRow;
-        const updated = await updateEditedPlaylist(targetId, {
-          name,
-          edits_json,
-          channel_count:      channels.length,
-          enabled_count:      enabled.length,
-          source_playlist_id: sourceRow.id ?? (existing as any)?.source_playlist_id ?? null,
-        });
+        // ── RE-SAVE: overwrite same row, player_url unchanged ──
+        const updated = await updateEditedPlaylist(targetId, patch);
         setEditedRow(updated);
         setIsSourceMode(false);
-        toast.success(`"${name}" updated! Any existing share URL stays the same.`);
+        toast.success(`"${name}" updated!`);
       } else {
-        const newRow = await saveNewEditedPlaylist({
-          source_playlist_id: sourceRow.id,
-          name,
-          edits_json,
-          channel_count: channels.length,
-          enabled_count: enabled.length,
-        });
+        // ── FIRST SAVE ──
+        const newRow = await saveNewEditedPlaylist(patch);
         setEditedRow(newRow);
         setIsSourceMode(false);
         toast.success(`"${name}" created and saved to your dashboard!`);
@@ -363,7 +373,6 @@ export default function EditorPage() {
       setSaving(false);
     }
   };
-
 
   // ── Find & Replace ────────────────────────────────────────────
   const handleFindReplace = () => {
@@ -525,7 +534,7 @@ export default function EditorPage() {
     setGeneratingUrl(true);
     try {
       const { url, updatedRow } = await getOrCreatePlayerUrl(editedRow);
-      setEditedRow(updatedRow);   // keep local state in sync with stored player_url
+      setEditedRow(updatedRow);
       await navigator.clipboard.writeText(url);
       toast.success("Player URL copied! Paste it into TiviMate or any M3U player.", { duration: 5000 });
     } catch (err: any) {
