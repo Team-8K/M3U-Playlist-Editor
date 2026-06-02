@@ -17,11 +17,8 @@ export type SourcePlaylistRow = {
   id: string;
   user_id: string;
   name: string;
-  source_type: "file" | "url" | "xtream";
+  source_type: "file" | "url";
   url?: string | null;
-  xtream_host?: string | null;
-  xtream_user?: string | null;
-  storage_path?: string | null;
   channel_count: number;
   created_at: string;
   updated_at: string;
@@ -32,8 +29,7 @@ export type EditedPlaylistRow = {
   user_id: string;
   source_playlist_id?: string | null;
   name: string;
-  content?: string | null;
-  storage_path?: string | null;
+  edits_json?: string | null;
   player_url?: string | null;
   channel_count: number;
   enabled_count: number;
@@ -125,35 +121,13 @@ export async function listEditedPlaylists(): Promise<EditedPlaylistRow[]> {
   return (data ?? []) as EditedPlaylistRow[];
 }
 
-/** Delete one edited playlist (and its storage file if any) */
+/** Delete one edited playlist */
 export async function deleteEditedPlaylist(row: EditedPlaylistRow): Promise<void> {
-  if (row.storage_path) {
-    await supabase.storage.from("edited-playlists").remove([row.storage_path]);
-  }
   const { error } = await supabase
     .from("edited_playlists")
     .delete()
     .eq("id", row.id);
   if (error) throw error;
-}
-
-// ── Upload file to storage ────────────────────────────────────────────────
-export async function uploadPlaylistFile(
-  bucket: "source-playlists" | "edited-playlists",
-  filename: string,
-  content: string
-): Promise<string> {
-  const uid = await getUid();
-  const path = `${uid}/${filename}`;
-  const blob = new Blob([content], { type: "audio/x-mpegurl" });
-
-  const { error } = await supabase.storage.from(bucket).upload(path, blob, {
-    upsert: true,
-    contentType: "audio/x-mpegurl",
-  });
-
-  if (error) throw error;
-  return path;
 }
 
 // ── Legacy aliases (keep old callers working) ─────────────────────────────
@@ -162,39 +136,57 @@ export const saveSourcePlaylist = upsertSourcePlaylist;
 export const upsertEditedPlaylist = saveNewEditedPlaylist;
 export const saveEditedPlaylist   = saveNewEditedPlaylist;
 
-// ── Signed player URL (max expiry = 1 year) ───────────────────────────────
+// ── Player URL — slug-based, permanent ────────────────────────────────────
 
 /**
  * Return the permanent player URL for an edited playlist.
- * - If already stored on the row, return it immediately (no new URL generated).
- * - If not yet stored, generate a 100-year signed URL, persist it to the DB,
- *   and return it. The URL is tied to the fixed storage path which never
- *   changes after first save, so it stays valid through all future re-edits.
+ *
+ * On first call: creates a row in shared_playlists with a random slug,
+ * caches the resulting URL in edited_playlists.player_url, and returns it.
+ *
+ * On subsequent calls: returns the cached player_url immediately.
+ *
+ * The URL never changes across re-saves because it is tied to the slug,
+ * which is tied to the edited_playlist id — both immutable once created.
  */
 export async function getOrCreatePlayerUrl(
   row: EditedPlaylistRow
 ): Promise<{ url: string; updatedRow: EditedPlaylistRow }> {
-  // Already have a stored URL — return it as-is
+  // Already cached — return immediately
   if (row.player_url) {
     return { url: row.player_url, updatedRow: row };
   }
 
-  if (!row.storage_path) {
-    throw new Error("No storage path on this playlist. Re-save it in the Editor first.");
+  const uid = await getUid();
+
+  // Check if a shared_playlists row already exists for this edited playlist
+  const { data: existing } = await supabase
+    .from("shared_playlists")
+    .select("slug")
+    .eq("edited_playlist_id", row.id)
+    .maybeSingle();
+
+  let slug: string;
+
+  if (existing?.slug) {
+    slug = existing.slug;
+  } else {
+    // Generate a random 24-char hex slug
+    const arr = new Uint8Array(12);
+    crypto.getRandomValues(arr);
+    slug = Array.from(arr).map(b => b.toString(16).padStart(2, "0")).join("");
+
+    const { error: ie } = await supabase
+      .from("shared_playlists")
+      .insert({ slug, edited_playlist_id: row.id, user_id: uid });
+    if (ie) throw new Error(ie.message);
   }
 
-  // 100 years in seconds — effectively permanent
-  const PERMANENT = 100 * 365 * 24 * 60 * 60;
-  const { data, error } = await supabase.storage
-    .from("edited-playlists")
-    .createSignedUrl(row.storage_path, PERMANENT);
-  if (error || !data?.signedUrl) {
-    throw new Error(error?.message || "Could not generate player URL");
-  }
+  // Stable URL — works on any deployment
+  const base = window.location.origin;
+  const url  = `${base}/api/playlist/${slug}.m3u`;
 
-  const url = data.signedUrl;
-
-  // Persist so it's never regenerated again
+  // Cache on the row so we never regenerate
   const { data: updated, error: ue } = await supabase
     .from("edited_playlists")
     .update({ player_url: url })
@@ -204,14 +196,4 @@ export async function getOrCreatePlayerUrl(
   if (ue) throw ue;
 
   return { url, updatedRow: updated as EditedPlaylistRow };
-}
-
-/** @deprecated Use getOrCreatePlayerUrl instead */
-export async function createPlaylistSignedUrl(storagePath: string): Promise<string> {
-  const PERMANENT = 100 * 365 * 24 * 60 * 60;
-  const { data, error } = await supabase.storage
-    .from("edited-playlists")
-    .createSignedUrl(storagePath, PERMANENT);
-  if (error || !data?.signedUrl) throw new Error(error?.message || "Could not generate player URL");
-  return data.signedUrl;
 }
