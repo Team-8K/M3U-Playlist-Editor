@@ -92,10 +92,6 @@ export default function Dashboard() {
       toast.info("File playlists cannot be resynced — reload via the Editor.");
       return;
     }
-    if (source.source_type === "xtream") {
-      toast.info("Xtream resync requires your provider password — use the Editor to reload.");
-      return;
-    }
     if (!source.url) return;
 
     setResyncing(true);
@@ -162,10 +158,6 @@ export default function Dashboard() {
   const [generatingUrlId, setGeneratingUrlId] = useState<string | null>(null);
 
   const handleGetPlayerUrl = async (row: EditedPlaylistRow) => {
-    if (!row.storage_path) {
-      toast.error("Open this playlist in the Editor, re-save it, then try again.");
-      return;
-    }
     setGeneratingUrlId(row.id);
     try {
       const { url, updatedRow } = await getOrCreatePlayerUrl(row);
@@ -182,15 +174,8 @@ export default function Dashboard() {
 
   // ── Download one edited playlist ──────────────────────────────
   const handleDownloadEdited = async (row: EditedPlaylistRow) => {
-    let content = row.content;
-    if (!content && row.storage_path) {
-      const { data, error } = await supabase.storage
-        .from("edited-playlists")
-        .download(row.storage_path);
-      if (error || !data) { toast.error("Download failed"); return; }
-      content = await data.text();
-    }
-    if (!content) { toast.error("No content to download"); return; }
+    const content = row.content;
+    if (!content) { toast.error("No content to download — open in Editor and re-save."); return; }
     const blob = new Blob([content], { type: "audio/x-mpegurl" });
     const url  = URL.createObjectURL(blob);
     const a    = document.createElement("a");
@@ -327,11 +312,6 @@ export default function Dashboard() {
                   {source.url && (
                     <p className="text-xs text-muted-foreground/60 font-mono truncate mt-0.5 max-w-xs">
                       {source.url}
-                    </p>
-                  )}
-                  {source.xtream_host && (
-                    <p className="text-xs text-muted-foreground/60 font-mono truncate mt-0.5 max-w-xs">
-                      {source.xtream_host} · {source.xtream_user}
                     </p>
                   )}
                 </div>
