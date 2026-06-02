@@ -165,7 +165,6 @@ export default function Dashboard() {
     setGeneratingUrlId(row.id);
     try {
       const { url, updatedRow } = await getOrCreatePlayerUrl(row);
-      // Update local state so the stored player_url is reflected immediately
       setEdited(prev => prev.map(r => r.id === updatedRow.id ? updatedRow : r));
       await navigator.clipboard.writeText(url);
       toast.success("Player URL copied! Paste it into TiviMate or any M3U player.", { duration: 5000 });
@@ -177,17 +176,25 @@ export default function Dashboard() {
   };
 
   // ── Download one edited playlist ──────────────────────────────
+  // Edited playlists are stored as metadata-only diffs. To download,
+  // we hit the same share endpoint the player uses (it rebuilds the
+  // M3U from source + diff on the fly).
   const handleDownloadEdited = async (row: EditedPlaylistRow) => {
-    const content = row.content;
-    if (!content) { toast.error("No content to download — open in Editor and re-save."); return; }
-    const blob = new Blob([content], { type: "audio/x-mpegurl" });
-    const url  = URL.createObjectURL(blob);
-    const a    = document.createElement("a");
-    a.href     = url;
-    a.download = `${row.name.replace(/\s+/g, "-")}.m3u`;
-    a.click();
-    URL.revokeObjectURL(url);
-    toast.success("Downloaded");
+    try {
+      const { url } = await getOrCreatePlayerUrl(row);
+      const res = await fetch(url);
+      if (!res.ok) throw new Error(`Download failed (${res.status})`);
+      const blob = await res.blob();
+      const blobUrl = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = blobUrl;
+      a.download = `${row.name.replace(/\s+/g, "-")}.m3u`;
+      a.click();
+      URL.revokeObjectURL(blobUrl);
+      toast.success("Downloaded");
+    } catch (err: any) {
+      toast.error(err?.message || "Download failed");
+    }
   };
 
   const sourceTypeIcon = (t: string) =>
