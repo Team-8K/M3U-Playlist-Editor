@@ -162,10 +162,6 @@ export default function Dashboard() {
   const [generatingUrlId, setGeneratingUrlId] = useState<string | null>(null);
 
   const handleGetPlayerUrl = async (row: EditedPlaylistRow) => {
-    if (!row.storage_path) {
-      toast.error("Open this playlist in the Editor, re-save it, then try again.");
-      return;
-    }
     setGeneratingUrlId(row.id);
     try {
       const { url, updatedRow } = await getOrCreatePlayerUrl(row);
@@ -182,15 +178,8 @@ export default function Dashboard() {
 
   // ── Download one edited playlist ──────────────────────────────
   const handleDownloadEdited = async (row: EditedPlaylistRow) => {
-    let content = row.content;
-    if (!content && row.storage_path) {
-      const { data, error } = await supabase.storage
-        .from("edited-playlists")
-        .download(row.storage_path);
-      if (error || !data) { toast.error("Download failed"); return; }
-      content = await data.text();
-    }
-    if (!content) { toast.error("No content to download"); return; }
+    const content = row.content;
+    if (!content) { toast.error("No content to download — open in Editor and re-save."); return; }
     const blob = new Blob([content], { type: "audio/x-mpegurl" });
     const url  = URL.createObjectURL(blob);
     const a    = document.createElement("a");
