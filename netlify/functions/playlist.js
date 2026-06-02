@@ -1,39 +1,22 @@
 /**
- * Team 8K — Shared Playlist Serve Function
- * Serves a saved edited playlist as raw M3U for TiviMate / Kodi / VLC
+ * Team 8K — Shared Playlist Serve Function (metadata-only edition)
  *
- * URL pattern (user-facing): /api/playlist/SLUG.m3u
- * Netlify redirect:          /api/* → /.netlify/functions/:splat
- * So this function is invoked as: /.netlify/functions/playlist/SLUG.m3u
+ * Edited playlists are stored as a tiny diff against their source.
+ * This function rebuilds the M3U on every request:
+ *   slug → shared_playlists → edited_playlists.edits_json
+ *                          → source_playlists (URL / Xtream / file)
+ *                          → fetch source → parse → apply diff → output
  *
- * Flow:
- *  1. Look up slug → edited_playlist_id in shared_playlists
- *  2. Fetch source M3U live from source_playlists.url
- *  3. Apply edits_json diff (disable, delete, rename, recategory, reorder, add)
- *  4. Serve the result as audio/x-mpegurl
- *
- * Falls back to the stored content column if source is unavailable or
- * edits_json is absent (e.g. file-sourced playlists).
- *
- * TiviMate behaviour:
- *  - Sends GET requests
- *  - Must receive HTTP 200 even on errors — non-200 causes player to disable playlist
- *  - Content-Type must be audio/x-mpegurl
+ * URL pattern: /api/playlist/SLUG.m3u
+ * TiviMate requires HTTP 200 even on errors (otherwise the playlist is
+ * permanently disabled in the player), so all error paths return an
+ * empty M3U with status 200.
  */
 
 const { createClient } = require("@supabase/supabase-js");
 
-const M3U_HEADERS = {
-  "Access-Control-Allow-Origin":  "*",
-  "Access-Control-Allow-Methods": "GET, HEAD, OPTIONS",
-  "Access-Control-Allow-Headers": "Content-Type, User-Agent",
-  "Content-Type":  "audio/x-mpegurl; charset=utf-8",
-  "Cache-Control": "no-store, no-cache, must-revalidate",
-};
-
-const emptyM3U = "#EXTM3U\n";
-
-// ── M3U parser ────────────────────────────────────────────────────────────
+// ── Tiny inline copy of src/lib/m3u.ts (parse/export) ───────────────────
+const ATTR_REGEX = /([a-zA-Z0-9-]+)="([^"]*)"/g;
 
 function parseM3U(content) {
   const lines = content.split(/\r?\n/);
@@ -41,17 +24,14 @@ function parseM3U(content) {
   let current = null;
   let extraLines = [];
   let counter = 0;
-  const ATTR_REGEX = /([a-zA-Z0-9-]+)="([^"]*)"/g;
-
   for (const raw of lines) {
     const line = raw.trim();
     if (!line) continue;
     if (line.startsWith("#EXTM3U")) continue;
-
     if (line.startsWith("#EXTINF")) {
       const commaIdx = line.indexOf(",");
-      const meta     = commaIdx >= 0 ? line.slice(0, commaIdx) : line;
-      const name     = commaIdx >= 0 ? line.slice(commaIdx + 1).trim() : "Unnamed";
+      const meta = commaIdx >= 0 ? line.slice(0, commaIdx) : line;
+      const name = commaIdx >= 0 ? line.slice(commaIdx + 1).trim() : "Unnamed";
       const attributes = {};
       ATTR_REGEX.lastIndex = 0;
       let m;
@@ -59,7 +39,6 @@ function parseM3U(content) {
       current = {
         id: `ch_${counter++}`,
         name,
-        originalName: name,
         category: attributes["group-title"] || "Uncategorized",
         attributes,
         enabled: true,
@@ -68,12 +47,7 @@ function parseM3U(content) {
       extraLines = [];
       continue;
     }
-
-    if (line.startsWith("#")) {
-      if (current) extraLines.push(line);
-      continue;
-    }
-
+    if (line.startsWith("#")) { if (current) extraLines.push(line); continue; }
     if (current) {
       current.url = line;
       current.extraLines = extraLines;
@@ -85,73 +59,16 @@ function parseM3U(content) {
   return channels;
 }
 
-// ── Diff apply ────────────────────────────────────────────────────────────
-
-function applyDiff(sourceChannels, diff) {
-  const deletedSet  = new Set(diff.deleted  || []);
-  const disabledSet = new Set(diff.disabled || []);
-  const renamed     = diff.renamed  || {};
-  const recatted    = diff.recatted || {};
-  const order       = diff.order    || {};
-  const added       = diff.added    || [];
-
-  // Apply mutations to source channels, filtering deleted ones
-  let result = sourceChannels
-    .filter(c => !deletedSet.has(c.url))
-    .map(c => ({
-      ...c,
-      enabled:    !disabledSet.has(c.url),
-      name:       renamed[c.url]  ?? c.name,
-      category:   recatted[c.url] ?? c.category,
-      attributes: {
-        ...c.attributes,
-        ...(recatted[c.url] ? { "group-title": recatted[c.url] } : {}),
-      },
-    }));
-
-  // Apply per-category ordering
-  if (Object.keys(order).length > 0) {
-    const byUrl       = new Map(result.map(c => [c.url, c]));
-    const orderedCats = new Set(Object.keys(order));
-    const unordered   = result.filter(c => !orderedCats.has(c.category));
-    const ordered     = [];
-    for (const [, urls] of Object.entries(order)) {
-      for (const url of urls) {
-        const ch = byUrl.get(url);
-        if (ch) ordered.push(ch);
-      }
-    }
-    result = [...ordered, ...unordered];
-  }
-
-  // Append added channels
-  const addedChannels = added.map((a, i) => ({
-    id:           `added_${i}`,
-    name:         a.name,
-    originalName: a.name,
-    url:          a.url,
-    category:     a.category,
-    attributes:   a.attributes || {},
-    extraLines:   a.extraLines || [],
-    enabled:      !disabledSet.has(a.url),
-  }));
-
-  return [...result, ...addedChannels];
-}
-
-// ── M3U exporter (enabled channels only) ─────────────────────────────────
-
 function exportM3U(channels) {
   const out = ["#EXTM3U"];
   for (const ch of channels) {
     if (!ch.enabled) continue;
-    const attrs    = { ...ch.attributes, "group-title": ch.category };
-    const attrStr  = Object.entries(attrs)
+    const attrs = { ...ch.attributes, "group-title": ch.category };
+    const attrStr = Object.entries(attrs)
       .filter(([, v]) => v !== undefined && v !== "")
-      .map(([k, v]) => `${k}="${v}"`)
-      .join(" ");
+      .map(([k, v]) => `${k}="${v}"`).join(" ");
     const duration = attrs["tvg-duration"] || "-1";
-    const prefix   = attrStr ? `#EXTINF:${duration} ${attrStr},` : `#EXTINF:${duration},`;
+    const prefix = attrStr ? `#EXTINF:${duration} ${attrStr},` : `#EXTINF:${duration},`;
     out.push(`${prefix}${ch.name}`);
     for (const extra of ch.extraLines || []) out.push(extra);
     out.push(ch.url);
@@ -159,133 +76,142 @@ function exportM3U(channels) {
   return out.join("\n") + "\n";
 }
 
-// ── Fetch source M3U via proxy ────────────────────────────────────────────
+// ── Diff application (mirror of src/lib/playlistDiff.ts) ────────────────
+const normUrl = (u) => (u || "").trim().toLowerCase();
 
-async function fetchSourceM3U(url) {
-  const userAgents = [
-    "okhttp/4.9.0",
-    "VLC/3.0.18 LibVLC/3.0.18",
-    "Tivimate/4.7.0",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36",
-  ];
-
-  for (const ua of userAgents) {
-    try {
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), 25000);
-      const res = await fetch(url, {
-        headers: { "User-Agent": ua, "Accept": "*/*", "Connection": "keep-alive" },
-        redirect: "follow",
-        signal: controller.signal,
+function applyDiff(source, diff) {
+  if (!diff || diff.v !== 1) return source;
+  const removed = new Set(diff.removed || []);
+  const overrides = diff.overrides || {};
+  const fromSource = [];
+  for (const ch of source) {
+    const key = normUrl(ch.url);
+    if (removed.has(key)) continue;
+    const ov = overrides[key];
+    if (ov) {
+      fromSource.push({
+        ...ch,
+        name: ov.name ?? ch.name,
+        category: ov.category ?? ch.category,
+        enabled: ov.enabled ?? ch.enabled,
+        attributes: { ...ch.attributes, "group-title": ov.category ?? ch.category },
       });
-      clearTimeout(timer);
-      if (!res.ok) continue;
-      const text = await res.text();
-      if (text.includes("#EXTM3U") || text.includes("#EXTINF")) return text;
-    } catch { continue; }
+    } else fromSource.push(ch);
   }
-  return null;
+  const combined = [...fromSource, ...(diff.added || [])];
+  if (!diff.order || !diff.order.length) return combined;
+  const byUrl = new Map(combined.map((c) => [normUrl(c.url), c]));
+  const ordered = [];
+  const used = new Set();
+  for (const url of diff.order) {
+    const c = byUrl.get(url);
+    if (c && !used.has(url)) { ordered.push(c); used.add(url); }
+  }
+  for (const c of combined) if (!used.has(normUrl(c.url))) ordered.push(c);
+  return ordered;
 }
 
-// ── Handler ───────────────────────────────────────────────────────────────
+// ── Fetch the source M3U based on the source_playlists row ──────────────
+async function fetchSourceM3U(supabase, sourceRow) {
+  // 1. URL-mode source — refetch directly
+  if (sourceRow.source_type === "url" && sourceRow.url) {
+    const res = await fetch(sourceRow.url, {
+      headers: { "User-Agent": "okhttp/4.9.0" },
+    });
+    if (!res.ok) throw new Error(`source URL ${res.status}`);
+    return await res.text();
+  }
+  // 2. File-mode source — pull from the source-playlists bucket
+  if (sourceRow.storage_path) {
+    const { data, error } = await supabase.storage
+      .from("source-playlists").download(sourceRow.storage_path);
+    if (error || !data) throw new Error(`storage download failed: ${error?.message}`);
+    return await data.text();
+  }
+  // 3. Xtream — we never store the password, so we can't rebuild server-side.
+  throw new Error("Xtream sources cannot be rebuilt without the saved password");
+}
 
 exports.handler = async function (event) {
+  const M3U_HEADERS = {
+    "Access-Control-Allow-Origin":  "*",
+    "Access-Control-Allow-Methods": "GET, HEAD, OPTIONS",
+    "Access-Control-Allow-Headers": "Content-Type, User-Agent",
+    "Content-Type":  "audio/x-mpegurl; charset=utf-8",
+    "Cache-Control": "no-store, no-cache, must-revalidate",
+  };
+  const emptyM3U = "#EXTM3U\n";
+  const fail = (msg) => {
+    console.error("playlist.js:", msg);
+    return { statusCode: 200, headers: M3U_HEADERS, body: emptyM3U };
+  };
+
   if (event.httpMethod === "OPTIONS") {
     return { statusCode: 204, headers: M3U_HEADERS, body: "" };
   }
 
-  // ── Extract slug ──────────────────────────────────────────────
-  const raw   = event.path || "";
+  const raw = event.path || "";
   const match = raw.match(/\/([a-fA-F0-9]{12,})(?:\.m3u)?(?:\/.*)?$/);
-  if (!match) {
-    console.error("playlist.js: could not extract slug from path:", raw);
-    return { statusCode: 200, headers: M3U_HEADERS, body: emptyM3U };
-  }
+  if (!match) return fail(`could not extract slug from path: ${raw}`);
   const slug = match[1];
 
-  // ── Supabase client ───────────────────────────────────────────
   const supabaseUrl = process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL;
-  const supabaseKey = process.env.VITE_SUPABASE_ANON_KEY || process.env.SUPABASE_ANON_KEY;
-  if (!supabaseUrl || !supabaseKey) {
-    console.error("playlist.js: missing Supabase env vars");
-    return { statusCode: 200, headers: M3U_HEADERS, body: emptyM3U };
-  }
+  // Use service role if available so RLS doesn't block reading another user's
+  // source row when a player hits the public slug. Fall back to anon for
+  // backward compat (works only if you've added a permissive policy).
+  const supabaseKey =
+    process.env.SUPABASE_SERVICE_ROLE_KEY ||
+    process.env.VITE_SUPABASE_ANON_KEY ||
+    process.env.SUPABASE_ANON_KEY;
+  if (!supabaseUrl || !supabaseKey) return fail("missing Supabase env vars");
+
   const supabase = createClient(supabaseUrl, supabaseKey);
 
   try {
-    // ── Look up slug → edited playlist ────────────────────────
     const { data: shared, error: se } = await supabase
       .from("shared_playlists")
       .select("edited_playlist_id")
       .eq("slug", slug)
       .maybeSingle();
+    if (se || !shared) return fail(`slug not found: ${slug}`);
 
-    if (se || !shared) {
-      console.error("playlist.js: slug not found:", slug, se?.message);
-      return { statusCode: 200, headers: M3U_HEADERS, body: emptyM3U };
-    }
-
-    // ── Fetch edited playlist + its source ────────────────────
-    const { data: playlist, error: pe } = await supabase
+    const { data: edited, error: pe } = await supabase
       .from("edited_playlists")
-      .select("content, edits_json, name, source_playlist_id")
+      .select("id, name, source_playlist_id, edits_json")
       .eq("id", shared.edited_playlist_id)
       .maybeSingle();
+    if (pe || !edited) return fail("edited playlist not found");
 
-    if (pe || !playlist) {
-      console.error("playlist.js: playlist not found:", shared.edited_playlist_id, pe?.message);
-      return { statusCode: 200, headers: M3U_HEADERS, body: emptyM3U };
+    if (!edited.source_playlist_id) {
+      return fail("edited playlist has no source — cannot rebuild");
     }
 
-    const filename = (playlist.name || "playlist")
+    const { data: src, error: sre } = await supabase
+      .from("source_playlists")
+      .select("*")
+      .eq("id", edited.source_playlist_id)
+      .maybeSingle();
+    if (sre || !src) return fail("source playlist not found");
+
+    const sourceText = await fetchSourceM3U(supabase, src);
+    const sourceChannels = parseM3U(sourceText);
+    if (!sourceChannels.length) return fail("source parsed to 0 channels");
+
+    const rebuilt = applyDiff(sourceChannels, edited.edits_json || {});
+    const m3u = exportM3U(rebuilt);
+
+    const filename = (edited.name || "playlist")
       .replace(/[^a-z0-9]/gi, "-").toLowerCase();
 
-    // ── Try: fetch source live + apply diff ───────────────────
-    if (playlist.edits_json && playlist.source_playlist_id) {
-      const { data: sourceRow } = await supabase
-        .from("source_playlists")
-        .select("url")
-        .eq("id", playlist.source_playlist_id)
-        .maybeSingle();
-
-      if (sourceRow?.url) {
-        const sourceText = await fetchSourceM3U(sourceRow.url);
-        if (sourceText) {
-          try {
-            const sourceChannels = parseM3U(sourceText);
-            const diff           = JSON.parse(playlist.edits_json);
-            const final          = applyDiff(sourceChannels, diff);
-            const m3uContent     = exportM3U(final);
-            const enabledCount   = final.filter(c => c.enabled).length;
-            console.log(`playlist.js: serving ${enabledCount} channels (diff) for slug ${slug}`);
-            return {
-              statusCode: 200,
-              headers: { ...M3U_HEADERS, "Content-Disposition": `inline; filename="${filename}.m3u"` },
-              body: m3uContent,
-            };
-          } catch (diffErr) {
-            console.error("playlist.js: diff apply failed:", diffErr.message);
-            // fall through to content fallback
-          }
-        }
-      }
-    }
-
-    // ── Fallback: serve stored content ────────────────────────
-    if (playlist.content) {
-      console.log(`playlist.js: serving stored content for slug ${slug}`);
-      return {
-        statusCode: 200,
-        headers: { ...M3U_HEADERS, "Content-Disposition": `inline; filename="${filename}.m3u"` },
-        body: playlist.content,
-      };
-    }
-
-    console.error("playlist.js: no content available for slug:", slug);
-    return { statusCode: 200, headers: M3U_HEADERS, body: emptyM3U };
-
+    return {
+      statusCode: 200,
+      headers: {
+        ...M3U_HEADERS,
+        "Content-Disposition": `inline; filename="${filename}.m3u"`,
+      },
+      body: m3u,
+    };
   } catch (err) {
-    console.error("playlist.js: unexpected error:", err);
-    return { statusCode: 200, headers: M3U_HEADERS, body: emptyM3U };
+    return fail(`unexpected: ${err && err.message ? err.message : err}`);
   }
 };
